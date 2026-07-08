@@ -32,10 +32,10 @@ native class Conn from "sqlite3.Conn" owned:
   def init(path as Str, flags as Int, busy_ms as Int) from "sqlite3.conn_open"
   def _close() from "sqlite3.conn_close"
   def destroy!() from "sqlite3.conn_free"
-  def _closed() -> Bool from "sqlite3.conn_closed"
+  def _closed?() -> Bool from "sqlite3.conn_closed"
   def _filename(schema as Str) -> Str from "sqlite3.conn_filename"
-  def _readonly(schema as Str) -> Bool from "sqlite3.conn_readonly"
-  def _in_transaction() -> Bool from "sqlite3.conn_in_transaction"
+  def _readonly?(schema as Str) -> Bool from "sqlite3.conn_readonly"
+  def _in_transaction?() -> Bool from "sqlite3.conn_in_transaction"
   def _changes() -> Int from "sqlite3.conn_changes"
   def _total_changes() -> Int from "sqlite3.conn_total_changes"
   def _last_insert_rowid() -> Int from "sqlite3.conn_last_insert_rowid"
@@ -50,15 +50,15 @@ native class Conn from "sqlite3.Conn" owned:
 native class Stmt from "sqlite3.Stmt" owned:
   def destroy!() from "sqlite3.stmt_free"
   def _finalize() from "sqlite3.stmt_finalize"
-  def _closed() -> Bool from "sqlite3.stmt_closed"
+  def _closed?() -> Bool from "sqlite3.stmt_closed"
   def _sql() -> Str from "sqlite3.stmt_sql"
   def _column_count() -> Int from "sqlite3.stmt_column_count"
   def _column_names() -> List from "sqlite3.stmt_column_names"
   def _column_meta() -> List from "sqlite3.stmt_column_meta"
   def _parameter_count() -> Int from "sqlite3.stmt_parameter_count"
   def _parameter_names() -> List from "sqlite3.stmt_parameter_names"
-  def _readonly() -> Bool from "sqlite3.stmt_readonly"
-  def _busy() -> Bool from "sqlite3.stmt_busy"
+  def _readonly?() -> Bool from "sqlite3.stmt_readonly"
+  def _busy?() -> Bool from "sqlite3.stmt_busy"
   def _reset() from "sqlite3.stmt_reset"
   def _clear_bindings() from "sqlite3.stmt_clear_bindings"
   def _bind(values as List) from "sqlite3.stmt_bind"
@@ -163,15 +163,15 @@ class Database:
     @conn.destroy!()
     null
   def closed?():
-    @conn._closed()
+    @conn._closed?
 
   # metadata --------------------------------------------------------------
   def filename(schema: :main):
     @conn._filename(_text_of(schema))
   def readonly?(schema: :main):
-    @conn._readonly(_text_of(schema))
+    @conn._readonly?(_text_of(schema))
   def in_transaction?():
-    @conn._in_transaction()
+    @conn._in_transaction?
   def changes():
     @conn._changes()
   def total_changes():
@@ -191,9 +191,9 @@ class Database:
       when Str:
         @conn._exec(sql)
       when SqlFragment:
-        if sql.params().count() > 0:
+        if sql.params.count > 0:
           raise ArgumentError.new("exec: a fragment passed to exec must not carry parameters")
-        @conn._exec(sql.text())
+        @conn._exec(sql.text)
       else:
         raise ArgumentError.new("exec expects a Str or parameterless fragment")
     _command_result(self)
@@ -257,7 +257,7 @@ class Database:
 
   # transactions ----------------------------------------------------------
   def begin!(mode: :deferred):
-    if @conn._in_transaction():
+    if @conn._in_transaction?:
       _raise("Sqlite3.TransactionError", "already in a transaction; use transaction or savepoint for nesting")
     @conn._exec(_begin_sql(mode))
     self
@@ -271,7 +271,7 @@ class Database:
   def transaction(mode: :deferred, &blk):
     if blk == null:
       raise ArgumentError.new("transaction requires a block")
-    if @conn._in_transaction():
+    if @conn._in_transaction?:
       if mode != :deferred:
         _raise("Sqlite3.TransactionError", "a nested transaction must use mode: :deferred (savepoints cannot upgrade the outer mode)")
       return self.savepoint(&blk)
@@ -377,7 +377,7 @@ class Database:
     _require_map(set, "set:").each |k, v|:
       assigns.push!(_render_ident(k) + " = ?")
       binds.push!(v)
-    if assigns.count() == 0:
+    if assigns.count == 0:
       raise ArgumentError.new("update: set: must not be empty")
     sql = "UPDATE " + _render_ident(table) + " SET " + assigns.join(", ")
     wc = _where_clause(where, where_not, binds)
@@ -429,7 +429,7 @@ class Statement:
     @stmt._finalize()
     null
   def closed?():
-    @stmt._closed()
+    @stmt._closed?
   def sql():
     @stmt._sql()
   def column_count():
@@ -438,7 +438,7 @@ class Statement:
     @stmt._column_names()
   def columns():
     out = []
-    @stmt._column_meta().each |m|:
+    @stmt._column_meta.each |m|:
       out.push!({name: m[0], database: m[1], table: m[2], origin_name: m[3], declared_type: m[4]})
     out
   def parameter_count():
@@ -446,9 +446,9 @@ class Statement:
   def parameter_names():
     @stmt._parameter_names()
   def readonly?():
-    @stmt._readonly()
+    @stmt._readonly?
   def busy?():
-    @stmt._busy()
+    @stmt._busy?
 
   # low-level stepping ----------------------------------------------------
   def bind!(params = null):
@@ -614,9 +614,9 @@ def _busy_ms(t):
     when Int:
       _check_ms(t * 1000)
     when Float:
-      _check_ms((t * 1000.0).to_int())
+      _check_ms((t * 1000.0).to_int)
     else:
-      _check_ms((t.total_nanoseconds / 1000000).to_int())
+      _check_ms((t.total_nanoseconds / 1000000).to_int)
 
 def _check_ms(ms):
   if ms < 0:
@@ -626,11 +626,11 @@ def _check_ms(ms):
 def _text_of(v):
   case v:
     when Symbol:
-      v.to_str()
+      v.to_str
     when Str:
       v
     else:
-      v.to_str()
+      v.to_str
 
 def _begin_sql(mode):
   if mode == :deferred:
@@ -647,7 +647,7 @@ _sp_counter = [0]
 def _savepoint_name(name):
   if name == null:
     _sp_counter[0] = _sp_counter[0] + 1
-    return "amber_sp_" + _sp_counter[0].to_str()
+    return "amber_sp_" + _sp_counter[0].to_str
   sp = _text_of(name)
   if _valid_ident(sp) == false:
     raise ArgumentError.new("savepoint name must be a safe SQL identifier: " + sp)
@@ -660,7 +660,7 @@ def _sql_parts(sql, params):
     when SqlFragment:
       if params != null:
         raise ArgumentError.new("params: must be null when the SQL fragment already carries parameters")
-      pair = [sql.text(), sql.params()]
+      pair = [sql.text, sql.params]
       pair
     when Str:
       [sql, params]
@@ -672,9 +672,9 @@ def _prepare_text(sql):
     when Str:
       sql
     when SqlFragment:
-      if sql.params().count() > 0:
+      if sql.params.count > 0:
         raise ArgumentError.new("prepare: a fragment must not carry parameters; use placeholders and pass values to the statement")
-      sql.text()
+      sql.text
     else:
       raise ArgumentError.new("prepare expects a Str or parameterless fragment")
 
@@ -697,10 +697,10 @@ def _positional_params(handle, params):
 
 def _named_positional(handle, map):
   out = []
-  handle._parameter_names().each |slot|:
+  handle._parameter_names.each |slot|:
     if slot == null:
       raise ArgumentError.new("a named-parameter Map cannot be used with positional (?) placeholders")
-    bare = slot.slice((1..(slot.length() - 1)))
+    bare = slot.slice((1..(slot.length - 1)))
     if map.has_key?(slot):
       out.push!(map[slot])
     elif map.has_key?(bare):
@@ -712,7 +712,7 @@ def _named_positional(handle, map):
 def _zip_row(names, values):
   row = {}
   i = 0
-  n = names.count()
+  n = names.count
   while i < n:
     row = row.with(names[i], values[i])
     i = i + 1
@@ -723,9 +723,9 @@ def _zip_row(names, values):
 def _render_ident(name):
   case name:
     when SqlIdent:
-      name.sql()
+      name.sql
     when Symbol:
-      _quote_one(name.to_str())
+      _quote_one(name.to_str)
     when Str:
       _quote_one(name)
     when Array:
@@ -747,7 +747,7 @@ def _quote_one(s):
 def _ident_key(c):
   case c:
     when Symbol:
-      c.to_str()
+      c.to_str
     when Str:
       c
     else:
@@ -760,10 +760,10 @@ def _safe_ident(name):
   nm
 
 def _valid_ident(s):
-  if s.length() == 0:
+  if s.length == 0:
     return false
   ok = true
-  s.chars().each |c|:
+  s.chars.each |c|:
     if _ident_char(c) == false:
       ok = false
   ok
@@ -819,11 +819,11 @@ def _projection_from_list(cols):
 def _column_sql(c):
   case c:
     when SqlFragment:
-      c.text()
+      c.text
     when SqlIdent:
-      c.sql()
+      c.sql
     when Symbol:
-      _quote_one(c.to_str())
+      _quote_one(c.to_str)
     when Str:
       _quote_one(c)
     else:
@@ -835,7 +835,7 @@ def _where_clause(where, where_not, binds):
     clauses.push!(_predicate_sql(where, binds))
   if where_not != null:
     clauses.push!("NOT (" + _predicate_sql(where_not, binds) + ")")
-  if clauses.count() == 0:
+  if clauses.count == 0:
     null
   else:
     clauses.join(" AND ")
@@ -843,9 +843,9 @@ def _where_clause(where, where_not, binds):
 def _predicate_sql(pred, binds):
   case pred:
     when SqlFragment:
-      pred.params().each |p|:
+      pred.params.each |p|:
         binds.push!(p)
-      pred.text()
+      pred.text
     when Map:
       _map_predicate(pred, binds)
     when StrictMap:
@@ -868,13 +868,13 @@ def _map_predicate(map, binds):
         else:
           parts.push!(col + " = ?")
           binds.push!(v)
-  if parts.count() == 0:
+  if parts.count == 0:
     "1 = 1"
   else:
     parts.join(" AND ")
 
 def _in_predicate(col, seq, binds):
-  if seq.count() == 0:
+  if seq.count == 0:
     return "0 = 1"
   ph = []
   seq.each |v|:
@@ -885,11 +885,11 @@ def _in_predicate(col, seq, binds):
 def _order_clause(order):
   case order:
     when SqlFragment:
-      order.text()
+      order.text
     when SqlIdent:
-      order.sql()
+      order.sql
     when Symbol:
-      _quote_one(order.to_str())
+      _quote_one(order.to_str)
     when Str:
       _quote_one(order)
     when Array:
@@ -934,7 +934,7 @@ def _int_literal(n):
     when Int:
       if n < 0:
         raise ArgumentError.new("limit/offset must be non-negative")
-      n.to_str()
+      n.to_str
     else:
       raise ArgumentError.new("limit/offset must be a non-negative Int")
 
@@ -954,7 +954,7 @@ def _rows_of(values):
       raise ArgumentError.new("values must be a row or a list of rows")
 
 def _rows_from_seq(seq):
-  if seq.count() == 0:
+  if seq.count == 0:
     raise ArgumentError.new("values must not be empty")
   if _is_row(seq[0]):
     _seq_to_list(seq)
@@ -988,7 +988,7 @@ def _row_values(row, col_names):
       raise ArgumentError.new("row must be a List, Tuple, or Map")
 
 def _seq_row_values(row, col_names):
-  if row.count() != col_names.count():
+  if row.count != col_names.count:
     raise ArgumentError.new("row size does not match the number of columns")
   _seq_to_list(row)
 
@@ -1006,9 +1006,9 @@ def _pragma_value_sql(v):
     when Bool:
       _bool_sql(v)
     when Int:
-      v.to_str()
+      v.to_str
     when Float:
-      v.to_str()
+      v.to_str
     when Symbol:
       _safe_ident(v)
     when Str:
