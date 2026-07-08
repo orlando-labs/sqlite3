@@ -1,0 +1,1049 @@
+package sqlite3
+
+# sqlite3 — a native-only Amber package for SQLite databases.
+#
+# Architecture: the amber_ext ABI exposes only null/bool/int/float/str/bytes/
+# list + foreign handles, so the C leaves (native/sqlite3_ext.c) stay low-level
+# (SQL as Str, binds as a flat List, rows as Lists). Everything a user touches —
+# name-indifferent row Maps, named parameters, keyword arguments, transactions,
+# the convenience SQL builders, and the typed error surface — is built here in
+# Amber over two private native-handle classes, `Conn` and `Stmt`.
+#
+# See DESIGN-package-sqlite3-api-2026-07-02.md for the full contract.
+
+export open, connect, memory
+export version, source_id, libversion_number, compile_options, features
+export fragment, ident, quote_identifier
+export Database, Statement, SqlFragment, SqlIdent
+
+# ---------------------------------------------------------------- native leaves
+
+# Raise any registered package error class (declared in amber.build.json). These
+# are raised through the C amber_fault path so `rescue Sqlite3.XError` matches.
+native def _raise(cls as Str, msg as Str) from "sqlite3.raise"
+
+native def _libversion() -> Str from "sqlite3.libversion"
+native def _sourceid() -> Str from "sqlite3.sourceid"
+native def _libversion_number() -> Int from "sqlite3.libversion_number"
+native def _compile_options() -> List from "sqlite3.compile_options"
+
+# A raw connection handle. Never handed to users directly; wrapped by Database.
+native class Conn from "sqlite3.Conn" owned:
+  def init(path as Str, flags as Int, busy_ms as Int) from "sqlite3.conn_open"
+  def _close() from "sqlite3.conn_close"
+  def destroy!() from "sqlite3.conn_free"
+  def _closed() -> Bool from "sqlite3.conn_closed"
+  def _filename(schema as Str) -> Str from "sqlite3.conn_filename"
+  def _readonly(schema as Str) -> Bool from "sqlite3.conn_readonly"
+  def _in_transaction() -> Bool from "sqlite3.conn_in_transaction"
+  def _changes() -> Int from "sqlite3.conn_changes"
+  def _total_changes() -> Int from "sqlite3.conn_total_changes"
+  def _last_insert_rowid() -> Int from "sqlite3.conn_last_insert_rowid"
+  def _interrupt() from "sqlite3.conn_interrupt"
+  def _busy_timeout(ms as Int) from "sqlite3.conn_busy_timeout"
+  def _exec(sql as Str) from "sqlite3.conn_exec"
+  def _prepare(sql as Str) from "sqlite3.conn_prepare"
+  def _probe(sql as Str) -> Bool from "sqlite3.conn_probe"
+
+# A raw prepared-statement handle. Produced by Conn#_prepare, wrapped by
+# Statement; never constructed directly, so it declares no init.
+native class Stmt from "sqlite3.Stmt" owned:
+  def destroy!() from "sqlite3.stmt_free"
+  def _finalize() from "sqlite3.stmt_finalize"
+  def _closed() -> Bool from "sqlite3.stmt_closed"
+  def _sql() -> Str from "sqlite3.stmt_sql"
+  def _column_count() -> Int from "sqlite3.stmt_column_count"
+  def _column_names() -> List from "sqlite3.stmt_column_names"
+  def _column_meta() -> List from "sqlite3.stmt_column_meta"
+  def _parameter_count() -> Int from "sqlite3.stmt_parameter_count"
+  def _parameter_names() -> List from "sqlite3.stmt_parameter_names"
+  def _readonly() -> Bool from "sqlite3.stmt_readonly"
+  def _busy() -> Bool from "sqlite3.stmt_busy"
+  def _reset() from "sqlite3.stmt_reset"
+  def _clear_bindings() from "sqlite3.stmt_clear_bindings"
+  def _bind(values as List) from "sqlite3.stmt_bind"
+  def _step() from "sqlite3.stmt_step"
+
+# ---------------------------------------------------------- typed SQL values
+
+# A trusted raw SQL fragment plus its positional bind parameters.
+class SqlFragment:
+  def init(@fragment_text, @fragment_params):
+    pass
+  def text():
+    @fragment_text
+  def params():
+    @fragment_params
+
+# A validated (already-quoted) SQL identifier marker.
+class SqlIdent:
+  def init(@ident_sql):
+    pass
+  def sql():
+    @ident_sql
+
+# ------------------------------------------------------------- module functions
+
+def version():
+  _libversion()
+
+def source_id():
+  _sourceid()
+
+def libversion_number():
+  _libversion_number()
+
+def compile_options():
+  _compile_options()
+
+def features():
+  _feature_map(null)
+
+def fragment(text as Str, params = []):
+  SqlFragment(text, params)
+
+def ident(name):
+  SqlIdent(_render_ident(name))
+
+def quote_identifier(name):
+  _render_ident(name)
+
+def open(path as Str, mode: :create, uri: false, busy_timeout: null, pragmas: {}, &blk):
+  flags = _open_flags(mode, uri)
+  busy_ms = _busy_ms(busy_timeout)
+  conn = Conn(path, flags, busy_ms)
+  db = Database(conn)
+  db._apply_pragmas(pragmas)
+  if blk == null:
+    return db
+  try:
+    blk(db)
+  ensure:
+    db.close!()
+
+def connect(path as Str, mode: :create, uri: false, busy_timeout: null, pragmas: {}, &blk):
+  db = open(path, mode: mode, uri: uri, busy_timeout: busy_timeout, pragmas: pragmas)
+  if blk == null:
+    return db
+  try:
+    blk(db)
+  ensure:
+    db.close!()
+
+def memory(name: null, shared: false, busy_timeout: null, pragmas: {}, &blk):
+  busy_ms = _busy_ms(busy_timeout)
+  path = ":memory:"
+  flags = 6
+  if name != null:
+    path = "file:" + _text_of(name) + "?mode=memory"
+    if shared:
+      path = path + "&cache=shared"
+    flags = 70
+  conn = Conn(path, flags, busy_ms)
+  db = Database(conn)
+  db._apply_pragmas(pragmas)
+  if blk == null:
+    return db
+  try:
+    blk(db)
+  ensure:
+    db.close!()
+
+# ------------------------------------------------------------------ Database
+
+class Database:
+  def init(@conn):
+    pass
+
+  # lifecycle -------------------------------------------------------------
+  def close!():
+    @conn._close()
+    null
+  def destroy!():
+    @conn.destroy!()
+    null
+  def closed?():
+    @conn._closed()
+
+  # metadata --------------------------------------------------------------
+  def filename(schema: :main):
+    @conn._filename(_text_of(schema))
+  def readonly?(schema: :main):
+    @conn._readonly(_text_of(schema))
+  def in_transaction?():
+    @conn._in_transaction()
+  def changes():
+    @conn._changes()
+  def total_changes():
+    @conn._total_changes()
+  def last_insert_rowid():
+    @conn._last_insert_rowid()
+  def busy_timeout!(timeout):
+    @conn._busy_timeout(_busy_ms(timeout))
+    self
+  def interrupt!():
+    @conn._interrupt()
+    null
+
+  # direct execution ------------------------------------------------------
+  def exec(sql):
+    case sql:
+      when Str:
+        @conn._exec(sql)
+      when SqlFragment:
+        if sql.params().count() > 0:
+          raise ArgumentError.new("exec: a fragment passed to exec must not carry parameters")
+        @conn._exec(sql.text())
+      else:
+        raise ArgumentError.new("exec expects a Str or parameterless fragment")
+    _command_result(self)
+
+  def prepare(sql, &blk):
+    handle = @conn._prepare(_prepare_text(sql))
+    st = Statement(handle, self)
+    if blk == null:
+      return st
+    try:
+      blk(st)
+    ensure:
+      st.close!()
+
+  def execute(sql, params: null):
+    parts = _sql_parts(sql, params)
+    self.prepare(parts[0]) |st|:
+      st.execute(params: parts[1])
+
+  def execute_many(sql, params):
+    self.prepare(_prepare_text(sql)) |st|:
+      total = 0
+      last = 0
+      params.each |entry|:
+        result = st.execute(params: entry)
+        total = total + result[:affected_rows]
+        last = result[:last_insert_id]
+      {affected_rows: total, changes: total, total_changes: @conn._total_changes(), last_insert_id: last, last_insert_rowid: last}
+
+  def query(sql, params: null):
+    parts = _sql_parts(sql, params)
+    self.prepare(parts[0]) |st|:
+      st.query(params: parts[1])
+
+  def query_one(sql, params: null, default: null):
+    parts = _sql_parts(sql, params)
+    self.prepare(parts[0]) |st|:
+      st.query_one(params: parts[1], default: default)
+
+  def scalar(sql, params: null, default: null):
+    parts = _sql_parts(sql, params)
+    self.prepare(parts[0]) |st|:
+      st.scalar(params: parts[1], default: default)
+
+  def query_arrays(sql, params: null):
+    parts = _sql_parts(sql, params)
+    self.prepare(parts[0]) |st|:
+      st.query_arrays(params: parts[1])
+
+  def each(sql, params: null, &blk):
+    parts = _sql_parts(sql, params)
+    self.prepare(parts[0]) |st|:
+      st.each(params: parts[1]) |row|:
+        blk(row)
+
+  def each_array(sql, params: null, &blk):
+    parts = _sql_parts(sql, params)
+    self.prepare(parts[0]) |st|:
+      st.each_array(params: parts[1]) |row|:
+        blk(row)
+
+  # transactions ----------------------------------------------------------
+  def begin!(mode: :deferred):
+    if @conn._in_transaction():
+      _raise("Sqlite3.TransactionError", "already in a transaction; use transaction or savepoint for nesting")
+    @conn._exec(_begin_sql(mode))
+    self
+  def commit!():
+    @conn._exec("COMMIT")
+    self
+  def rollback!():
+    @conn._exec("ROLLBACK")
+    self
+
+  def transaction(mode: :deferred, &blk):
+    if blk == null:
+      raise ArgumentError.new("transaction requires a block")
+    if @conn._in_transaction():
+      if mode != :deferred:
+        _raise("Sqlite3.TransactionError", "a nested transaction must use mode: :deferred (savepoints cannot upgrade the outer mode)")
+      return self.savepoint(&blk)
+    @conn._exec(_begin_sql(mode))
+    committed = false
+    try:
+      result = blk(self)
+      @conn._exec("COMMIT")
+      committed = true
+      result
+    ensure:
+      if committed == false:
+        self._safe_exec("ROLLBACK")
+
+  def savepoint(name: null, &blk):
+    if blk == null:
+      raise ArgumentError.new("savepoint requires a block")
+    sp = _savepoint_name(name)
+    quoted = _quote_one(sp)
+    @conn._exec("SAVEPOINT " + quoted)
+    released = false
+    try:
+      result = blk(self)
+      @conn._exec("RELEASE " + quoted)
+      released = true
+      result
+    ensure:
+      if released == false:
+        self._safe_exec("ROLLBACK TO " + quoted)
+        self._safe_exec("RELEASE " + quoted)
+
+  def _safe_exec(sql):
+    try:
+      @conn._exec(sql)
+    rescue Sqlite3.Error |e|:
+      null
+
+  # pragmas ---------------------------------------------------------------
+  def pragma(name):
+    self.scalar("PRAGMA " + _safe_ident(name))
+  def pragma!(name, value):
+    self.exec("PRAGMA " + _safe_ident(name) + " = " + _pragma_value_sql(value))
+    self
+  def _apply_pragmas(pragmas):
+    if pragmas == null:
+      return null
+    pragmas.each |name, value|:
+      self.pragma!(name, value)
+    null
+
+  # feature discovery -----------------------------------------------------
+  def features():
+    _feature_map(self)
+  def json_available?():
+    @conn._probe("SELECT json('1')")
+  def jsonb_available?():
+    @conn._probe("SELECT jsonb('1')")
+  def jsonb_each_available?():
+    @conn._probe("SELECT 1 FROM jsonb_each('[1]')")
+  def jsonb_tree_available?():
+    @conn._probe("SELECT 1 FROM jsonb_tree('[1]')")
+
+  # convenience: insert ---------------------------------------------------
+  def insert(table, columns:, values:, returning: null):
+    self._insert_core("INSERT", table, columns, values, returning)
+  def insert_or_ignore(table, columns:, values:, returning: null):
+    self._insert_core("INSERT OR IGNORE", table, columns, values, returning)
+  def insert_or_replace(table, columns:, values:, returning: null):
+    self._insert_core("INSERT OR REPLACE", table, columns, values, returning)
+  def upsert(table, columns:, values:, returning: null):
+    self._insert_core("INSERT OR REPLACE", table, columns, values, returning)
+
+  def _insert_core(verb, table, columns, values, returning):
+    cols = _as_list(columns)
+    col_sql = []
+    col_names = []
+    cols.each |c|:
+      col_sql.push!(_render_ident(c))
+      col_names.push!(_ident_key(c))
+    rows = _rows_of(values)
+    binds = []
+    row_frags = []
+    rows.each |row|:
+      vals = _row_values(row, col_names)
+      placeholders = []
+      vals.each |v|:
+        placeholders.push!("?")
+        binds.push!(v)
+      row_frags.push!("(" + placeholders.join(", ") + ")")
+    sql = verb + " INTO " + _render_ident(table) + " (" + col_sql.join(", ") + ") VALUES " + row_frags.join(", ")
+    ret = _returning_sql(returning)
+    if ret == null:
+      self.prepare(sql) |st|:
+        st.execute(params: binds)
+    else:
+      self.prepare(sql + " RETURNING " + ret) |st|:
+        st.query(params: binds)
+
+  # convenience: update / delete -----------------------------------------
+  def update(table, set:, where: null, where_not: null, returning: null):
+    binds = []
+    assigns = []
+    _require_map(set, "set:").each |k, v|:
+      assigns.push!(_render_ident(k) + " = ?")
+      binds.push!(v)
+    if assigns.count() == 0:
+      raise ArgumentError.new("update: set: must not be empty")
+    sql = "UPDATE " + _render_ident(table) + " SET " + assigns.join(", ")
+    wc = _where_clause(where, where_not, binds)
+    if wc != null:
+      sql = sql + " WHERE " + wc
+    self._write_with_returning(sql, binds, returning)
+
+  def delete(table, where: null, where_not: null, returning: null):
+    binds = []
+    sql = "DELETE FROM " + _render_ident(table)
+    wc = _where_clause(where, where_not, binds)
+    if wc != null:
+      sql = sql + " WHERE " + wc
+    self._write_with_returning(sql, binds, returning)
+
+  def _write_with_returning(sql, binds, returning):
+    ret = _returning_sql(returning)
+    if ret == null:
+      self.prepare(sql) |st|:
+        st.execute(params: binds)
+    else:
+      self.prepare(sql + " RETURNING " + ret) |st|:
+        st.query(params: binds)
+
+  # convenience: select / get --------------------------------------------
+  def select(table, columns: :all, where: null, where_not: null, group_by: null, having: null, order: null, limit: null, offset: null):
+    binds = []
+    sql = _select_sql(table, columns, where, where_not, group_by, having, order, limit, offset, binds)
+    self.prepare(sql) |st|:
+      st.query(params: binds)
+
+  def get(table, columns: :all, where: null, where_not: null, group_by: null, having: null, order: null):
+    binds = []
+    sql = _select_sql(table, columns, where, where_not, group_by, having, order, 1, null, binds)
+    self.prepare(sql) |st|:
+      st.query_one(params: binds)
+
+# ------------------------------------------------------------------ Statement
+
+class Statement:
+  def init(@stmt, @db):
+    pass
+
+  # lifecycle / metadata --------------------------------------------------
+  def close!():
+    @stmt._finalize()
+    null
+  def destroy!():
+    @stmt._finalize()
+    null
+  def closed?():
+    @stmt._closed()
+  def sql():
+    @stmt._sql()
+  def column_count():
+    @stmt._column_count()
+  def column_names():
+    @stmt._column_names()
+  def columns():
+    out = []
+    @stmt._column_meta().each |m|:
+      out.push!({name: m[0], database: m[1], table: m[2], origin_name: m[3], declared_type: m[4]})
+    out
+  def parameter_count():
+    @stmt._parameter_count()
+  def parameter_names():
+    @stmt._parameter_names()
+  def readonly?():
+    @stmt._readonly()
+  def busy?():
+    @stmt._busy()
+
+  # low-level stepping ----------------------------------------------------
+  def bind!(params = null):
+    @stmt._clear_bindings()
+    @stmt._bind(_positional_params(@stmt, params))
+    self
+  def reset!():
+    @stmt._reset()
+    self
+  def clear_bindings!():
+    @stmt._clear_bindings()
+    self
+  def step():
+    names = @stmt._column_names()
+    row = @stmt._step()
+    if row == null:
+      null
+    else:
+      _zip_row(names, row)
+  def step_array():
+    @stmt._step()
+
+  # high-level helpers (clear + bind + run + reset) -----------------------
+  def _prime(params):
+    @stmt._clear_bindings()
+    @stmt._bind(_positional_params(@stmt, params))
+
+  def execute(params: null):
+    self._prime(params)
+    first = @stmt._step()
+    if first != null:
+      @stmt._reset()
+      _raise("Sqlite3.StepError", "execute: statement returned rows; use query, query_one, or scalar")
+    @stmt._reset()
+    _command_result(@db)
+
+  def query(params: null):
+    self._prime(params)
+    names = @stmt._column_names()
+    out = []
+    row = @stmt._step()
+    while row != null:
+      out.push!(_zip_row(names, row))
+      row = @stmt._step()
+    @stmt._reset()
+    out
+
+  def query_one(params: null, default: null):
+    self._prime(params)
+    names = @stmt._column_names()
+    row = @stmt._step()
+    @stmt._reset()
+    if row == null:
+      default
+    else:
+      _zip_row(names, row)
+
+  def scalar(params: null, default: null):
+    self._prime(params)
+    row = @stmt._step()
+    @stmt._reset()
+    if row == null:
+      default
+    else:
+      row[0]
+
+  def query_arrays(params: null):
+    self._prime(params)
+    cols = @stmt._column_names()
+    rows = []
+    row = @stmt._step()
+    while row != null:
+      rows.push!(row)
+      row = @stmt._step()
+    @stmt._reset()
+    {columns: cols, rows: rows}
+
+  def each(params: null, &blk):
+    if blk == null:
+      raise ArgumentError.new("each requires a block")
+    self._prime(params)
+    names = @stmt._column_names()
+    count = 0
+    row = @stmt._step()
+    while row != null:
+      blk(_zip_row(names, row))
+      count = count + 1
+      row = @stmt._step()
+    @stmt._reset()
+    count
+
+  def each_array(params: null, &blk):
+    if blk == null:
+      raise ArgumentError.new("each_array requires a block")
+    self._prime(params)
+    count = 0
+    row = @stmt._step()
+    while row != null:
+      blk(row)
+      count = count + 1
+      row = @stmt._step()
+    @stmt._reset()
+    count
+
+# --------------------------------------------------------------- module helpers
+
+def _feature_map(db):
+  json_ok = true
+  jsonb_ok = true
+  je = true
+  jt = true
+  if db != null:
+    json_ok = db.json_available?()
+    jsonb_ok = db.jsonb_available?()
+    je = db.jsonb_each_available?()
+    jt = db.jsonb_tree_available?()
+  {
+    adapter: :sqlite3,
+    dialect: :sqlite,
+    version: _libversion(),
+    source_id: _sourceid(),
+    libversion_number: _libversion_number(),
+    compile_options: _compile_options(),
+    placeholder_style: :qmark,
+    named_parameters: true,
+    returning: true,
+    savepoints: true,
+    nested_transactions: :savepoint,
+    ddl_transactions: true,
+    pool: false,
+    pool_wait: :cooperative,
+    pool_affinity: :native_thread,
+    json: json_ok,
+    jsonb: jsonb_ok,
+    jsonb_each: je,
+    jsonb_tree: jt
+  }
+
+def _command_result(db):
+  ch = db.changes()
+  tot = db.total_changes()
+  lid = db.last_insert_rowid()
+  {affected_rows: ch, changes: ch, total_changes: tot, last_insert_id: lid, last_insert_rowid: lid}
+
+def _open_flags(mode, uri):
+  base = 6
+  if mode == :readonly:
+    base = 1
+  elif mode == :readwrite:
+    base = 2
+  elif mode == :create:
+    base = 6
+  else:
+    raise ArgumentError.new("invalid mode (expected :readonly, :readwrite, or :create)")
+  if uri:
+    base = base + 64
+  base
+
+def _busy_ms(t):
+  if t == null:
+    return -1
+  case t:
+    when Int:
+      _check_ms(t * 1000)
+    when Float:
+      _check_ms((t * 1000.0).to_int())
+    else:
+      _check_ms((t.total_nanoseconds / 1000000).to_int())
+
+def _check_ms(ms):
+  if ms < 0:
+    raise ArgumentError.new("busy_timeout must be non-negative")
+  ms
+
+def _text_of(v):
+  case v:
+    when Symbol:
+      v.to_str()
+    when Str:
+      v
+    else:
+      v.to_str()
+
+def _begin_sql(mode):
+  if mode == :deferred:
+    "BEGIN DEFERRED"
+  elif mode == :immediate:
+    "BEGIN IMMEDIATE"
+  elif mode == :exclusive:
+    "BEGIN EXCLUSIVE"
+  else:
+    raise ArgumentError.new("invalid transaction mode (expected :deferred, :immediate, or :exclusive)")
+
+_sp_counter = [0]
+
+def _savepoint_name(name):
+  if name == null:
+    _sp_counter[0] = _sp_counter[0] + 1
+    return "amber_sp_" + _sp_counter[0].to_str()
+  sp = _text_of(name)
+  if _valid_ident(sp) == false:
+    raise ArgumentError.new("savepoint name must be a safe SQL identifier: " + sp)
+  sp
+
+# SQL argument handling -------------------------------------------------------
+
+def _sql_parts(sql, params):
+  case sql:
+    when SqlFragment:
+      if params != null:
+        raise ArgumentError.new("params: must be null when the SQL fragment already carries parameters")
+      pair = [sql.text(), sql.params()]
+      pair
+    when Str:
+      [sql, params]
+    else:
+      raise ArgumentError.new("sql must be a Str or a fragment produced by sqlite3.fragment")
+
+def _prepare_text(sql):
+  case sql:
+    when Str:
+      sql
+    when SqlFragment:
+      if sql.params().count() > 0:
+        raise ArgumentError.new("prepare: a fragment must not carry parameters; use placeholders and pass values to the statement")
+      sql.text()
+    else:
+      raise ArgumentError.new("prepare expects a Str or parameterless fragment")
+
+# parameter shaping -----------------------------------------------------------
+
+def _positional_params(handle, params):
+  if params == null:
+    return []
+  case params:
+    when Array:
+      params
+    when Tuple:
+      _seq_to_list(params)
+    when Map:
+      _named_positional(handle, params)
+    when StrictMap:
+      _named_positional(handle, params)
+    else:
+      raise ArgumentError.new("params must be a List, Tuple, Map, or null")
+
+def _named_positional(handle, map):
+  out = []
+  handle._parameter_names().each |slot|:
+    if slot == null:
+      raise ArgumentError.new("a named-parameter Map cannot be used with positional (?) placeholders")
+    bare = slot.slice((1..(slot.length() - 1)))
+    if map.has_key?(slot):
+      out.push!(map[slot])
+    elif map.has_key?(bare):
+      out.push!(map[bare])
+    else:
+      raise ArgumentError.new("missing bind value for parameter " + slot)
+  out
+
+def _zip_row(names, values):
+  row = {}
+  i = 0
+  n = names.count()
+  while i < n:
+    row = row.with(names[i], values[i])
+    i = i + 1
+  row
+
+# identifiers -----------------------------------------------------------------
+
+def _render_ident(name):
+  case name:
+    when SqlIdent:
+      name.sql()
+    when Symbol:
+      _quote_one(name.to_str())
+    when Str:
+      _quote_one(name)
+    when Array:
+      _render_ident_path(name)
+    when Tuple:
+      _render_ident_path(_seq_to_list(name))
+    else:
+      raise ArgumentError.new("identifier must be a Symbol, Str, List, or SqlIdent")
+
+def _render_ident_path(segments):
+  parts = []
+  segments.each |seg|:
+    parts.push!(_render_ident(seg))
+  parts.join(".")
+
+def _quote_one(s):
+  "\"" + s.replace("\"", "\"\"") + "\""
+
+def _ident_key(c):
+  case c:
+    when Symbol:
+      c.to_str()
+    when Str:
+      c
+    else:
+      _render_ident(c)
+
+def _safe_ident(name):
+  nm = _text_of(name)
+  if _valid_ident(nm) == false:
+    raise ArgumentError.new("unsafe SQL identifier: " + nm)
+  nm
+
+def _valid_ident(s):
+  if s.length() == 0:
+    return false
+  ok = true
+  s.chars().each |c|:
+    if _ident_char(c) == false:
+      ok = false
+  ok
+
+def _ident_char(c):
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_".contains?(c)
+
+# convenience-layer SQL builders ----------------------------------------------
+
+def _select_sql(table, columns, where, where_not, group_by, having, order, limit, offset, binds):
+  sql = "SELECT " + _columns_clause(columns) + " FROM " + _render_ident(table)
+  wc = _where_clause(where, where_not, binds)
+  if wc != null:
+    sql = sql + " WHERE " + wc
+  if group_by != null:
+    sql = sql + " GROUP BY " + _projection_clause(group_by)
+  if having != null:
+    sql = sql + " HAVING " + _predicate_sql(having, binds)
+  if order != null:
+    sql = sql + " ORDER BY " + _order_clause(order)
+  if limit != null:
+    sql = sql + " LIMIT " + _int_literal(limit)
+    if offset != null:
+      sql = sql + " OFFSET " + _int_literal(offset)
+  sql
+
+def _columns_clause(columns):
+  if columns == :all:
+    return "*"
+  case columns:
+    when Array:
+      _projection_from_list(columns)
+    when Tuple:
+      _projection_from_list(_seq_to_list(columns))
+    else:
+      _column_sql(columns)
+
+def _projection_clause(cols):
+  case cols:
+    when Array:
+      _projection_from_list(cols)
+    when Tuple:
+      _projection_from_list(_seq_to_list(cols))
+    else:
+      _column_sql(cols)
+
+def _projection_from_list(cols):
+  parts = []
+  cols.each |c|:
+    parts.push!(_column_sql(c))
+  parts.join(", ")
+
+def _column_sql(c):
+  case c:
+    when SqlFragment:
+      c.text()
+    when SqlIdent:
+      c.sql()
+    when Symbol:
+      _quote_one(c.to_str())
+    when Str:
+      _quote_one(c)
+    else:
+      raise ArgumentError.new("invalid column expression")
+
+def _where_clause(where, where_not, binds):
+  clauses = []
+  if where != null:
+    clauses.push!(_predicate_sql(where, binds))
+  if where_not != null:
+    clauses.push!("NOT (" + _predicate_sql(where_not, binds) + ")")
+  if clauses.count() == 0:
+    null
+  else:
+    clauses.join(" AND ")
+
+def _predicate_sql(pred, binds):
+  case pred:
+    when SqlFragment:
+      pred.params().each |p|:
+        binds.push!(p)
+      pred.text()
+    when Map:
+      _map_predicate(pred, binds)
+    when StrictMap:
+      _map_predicate(pred, binds)
+    else:
+      raise ArgumentError.new("predicate must be a Map or a fragment")
+
+def _map_predicate(map, binds):
+  parts = []
+  map.each |k, v|:
+    col = _render_ident(k)
+    if v == null:
+      parts.push!(col + " IS NULL")
+    else:
+      case v:
+        when Array:
+          parts.push!(_in_predicate(col, v, binds))
+        when Tuple:
+          parts.push!(_in_predicate(col, _seq_to_list(v), binds))
+        else:
+          parts.push!(col + " = ?")
+          binds.push!(v)
+  if parts.count() == 0:
+    "1 = 1"
+  else:
+    parts.join(" AND ")
+
+def _in_predicate(col, seq, binds):
+  if seq.count() == 0:
+    return "0 = 1"
+  ph = []
+  seq.each |v|:
+    ph.push!("?")
+    binds.push!(v)
+  col + " IN (" + ph.join(", ") + ")"
+
+def _order_clause(order):
+  case order:
+    when SqlFragment:
+      order.text()
+    when SqlIdent:
+      order.sql()
+    when Symbol:
+      _quote_one(order.to_str())
+    when Str:
+      _quote_one(order)
+    when Array:
+      _order_list(order)
+    when Tuple:
+      _order_list(_seq_to_list(order))
+    else:
+      raise ArgumentError.new("invalid order expression")
+
+def _order_list(items):
+  parts = []
+  items.each |item|:
+    case item:
+      when Array:
+        parts.push!(_render_ident(item[0]) + " " + _dir_sql(item[1]))
+      when Tuple:
+        parts.push!(_render_ident(item[0]) + " " + _dir_sql(item[1]))
+      else:
+        parts.push!(_render_ident(item))
+  parts.join(", ")
+
+def _dir_sql(dir):
+  if dir == :asc:
+    "ASC"
+  elif dir == :desc:
+    "DESC"
+  else:
+    raise ArgumentError.new("order direction must be :asc or :desc")
+
+def _returning_sql(returning):
+  if returning == null:
+    return null
+  if returning == :all:
+    return "*"
+  parts = []
+  _as_list(returning).each |r|:
+    parts.push!(_column_sql(r))
+  parts.join(", ")
+
+def _int_literal(n):
+  case n:
+    when Int:
+      if n < 0:
+        raise ArgumentError.new("limit/offset must be non-negative")
+      n.to_str()
+    else:
+      raise ArgumentError.new("limit/offset must be a non-negative Int")
+
+# row/value normalization -----------------------------------------------------
+
+def _rows_of(values):
+  case values:
+    when Map:
+      [values]
+    when StrictMap:
+      [values]
+    when Array:
+      _rows_from_seq(values)
+    when Tuple:
+      _rows_from_seq(_seq_to_list(values))
+    else:
+      raise ArgumentError.new("values must be a row or a list of rows")
+
+def _rows_from_seq(seq):
+  if seq.count() == 0:
+    raise ArgumentError.new("values must not be empty")
+  if _is_row(seq[0]):
+    _seq_to_list(seq)
+  else:
+    [seq]
+
+def _is_row(v):
+  case v:
+    when Array:
+      true
+    when Tuple:
+      true
+    when Map:
+      true
+    when StrictMap:
+      true
+    else:
+      false
+
+def _row_values(row, col_names):
+  case row:
+    when Map:
+      _map_row_values(row, col_names)
+    when StrictMap:
+      _map_row_values(row, col_names)
+    when Array:
+      _seq_row_values(row, col_names)
+    when Tuple:
+      _seq_row_values(_seq_to_list(row), col_names)
+    else:
+      raise ArgumentError.new("row must be a List, Tuple, or Map")
+
+def _seq_row_values(row, col_names):
+  if row.count() != col_names.count():
+    raise ArgumentError.new("row size does not match the number of columns")
+  _seq_to_list(row)
+
+def _map_row_values(row, col_names):
+  out = []
+  col_names.each |name|:
+    if row.has_key?(name):
+      out.push!(row[name])
+    else:
+      raise ArgumentError.new("row is missing a value for column " + name)
+  out
+
+def _pragma_value_sql(v):
+  case v:
+    when Bool:
+      _bool_sql(v)
+    when Int:
+      v.to_str()
+    when Float:
+      v.to_str()
+    when Symbol:
+      _safe_ident(v)
+    when Str:
+      "'" + v.replace("'", "''") + "'"
+    when Null:
+      "NULL"
+    else:
+      raise ArgumentError.new("unsupported pragma value")
+
+def _bool_sql(v):
+  if v:
+    "1"
+  else:
+    "0"
+
+def _require_map(v, label):
+  case v:
+    when Map:
+      v
+    when StrictMap:
+      v
+    else:
+      raise ArgumentError.new(label + " must be a Map")
+
+def _as_list(v):
+  case v:
+    when Array:
+      v
+    when Tuple:
+      _seq_to_list(v)
+    else:
+      [v]
+
+def _seq_to_list(seq):
+  out = []
+  seq.each |x|:
+    out.push!(x)
+  out

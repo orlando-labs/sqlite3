@@ -1,0 +1,54 @@
+package sqlite3.example
+
+# A small tour of the sqlite3 package. Build native and run:
+#
+#   amberc build examples/basic.build.json --target native \
+#     --out-dir out --cache-dir cache
+#   ./out/sqlite3.example
+
+import sqlite3
+from sqlite3 import fragment
+
+export main
+
+def main():
+  sqlite3.memory() |db|:
+    db.exec("""
+      create table users(
+        id integer primary key,
+        name text not null,
+        age integer
+      )
+    """)
+
+    # Bulk insert with mixed row shapes (list, tuple, map).
+    db.insert(:users,
+      columns: [:name, :age],
+      values: [
+        ["Ada", 36],
+        ("Iris", 41),
+        {name: "June", age: 29}
+      ]
+    )
+
+    # Parameterized statement, run many times.
+    db.prepare("update users set age = age + ? where name = ?") |stmt|:
+      stmt.execute(params: [1, "Ada"])
+      stmt.execute(params: [1, "June"])
+
+    # Convenience select with a predicate map + ordering.
+    adults = db.select(:users,
+      columns: [:name, :age],
+      where: {age: [30, 37, 41, 42]},
+      order: [[:age, :desc]]
+    )
+
+    # A hand-written fragment carries its own bind parameters.
+    count = db.scalar(fragment("select count(*) from users where age > ?", [30]))
+
+    # Transaction: commits on normal return, rolls back on a raised error.
+    db.transaction(mode: :immediate) |tx|:
+      tx.insert(:users, columns: [:name, :age], values: [["Kay", 50]])
+
+    names = adults.map |row|: row[:name]
+    "adults=#{names.join(",")} over30=#{count} total=#{db.scalar("select count(*) from users")}"

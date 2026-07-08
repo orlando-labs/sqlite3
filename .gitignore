@@ -1,0 +1,9 @@
+# Build outputs
+/out/
+/cache/
+*.amberbc
+*.o
+*.a
+
+# macOS
+.DS_Store
