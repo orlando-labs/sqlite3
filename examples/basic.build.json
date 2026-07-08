@@ -182,6 +182,10 @@
         {
           "logical": "sqlite3.stmt_step",
           "symbol": "amsq_stmt_step"
+        },
+        {
+          "logical": "sqlite3.stmt_rows",
+          "symbol": "amsq_stmt_rows"
         }
       ],
       "types": [

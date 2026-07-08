@@ -3,20 +3,34 @@
   "name": "sqlite3.selftest",
   "root": "sqlite3.selftest",
   "profiles": {
-    "required": ["core.v1", "ffi.v1"],
+    "required": [
+      "core.v1",
+      "ffi.v1"
+    ],
     "optional": [],
     "forbidden": []
   },
   "modules": [
-    {"name": "sqlite3", "path": "../src/sqlite3.am"},
-    {"name": "sqlite3.selftest", "path": "selftest.am"}
+    {
+      "name": "sqlite3",
+      "path": "../src/sqlite3.am"
+    },
+    {
+      "name": "sqlite3.selftest",
+      "path": "selftest.am"
+    }
   ],
   "native_extensions": [
     {
       "name": "sqlite3",
       "language": "c",
-      "sources": ["../native/sqlite3_ext.c", "../native/sqlite3.c"],
-      "headers": ["../native/sqlite3.h"],
+      "sources": [
+        "../native/sqlite3_ext.c",
+        "../native/sqlite3.c"
+      ],
+      "headers": [
+        "../native/sqlite3.h"
+      ],
       "defines": [
         "SQLITE_THREADSAFE=1",
         "SQLITE_ENABLE_COLUMN_METADATA=1",
@@ -25,68 +39,238 @@
         "SQLITE_DQS=0",
         "SQLITE_OMIT_LOAD_EXTENSION=1"
       ],
-      "capabilities": ["ffi"],
+      "capabilities": [
+        "ffi"
+      ],
       "symbols": [
-        {"logical": "sqlite3.raise", "symbol": "amsq_raise"},
-        {"logical": "sqlite3.libversion", "symbol": "amsq_libversion"},
-        {"logical": "sqlite3.sourceid", "symbol": "amsq_sourceid"},
-        {"logical": "sqlite3.libversion_number", "symbol": "amsq_libversion_number"},
-        {"logical": "sqlite3.compile_options", "symbol": "amsq_compile_options"},
-
-        {"logical": "sqlite3.conn_open", "symbol": "amsq_conn_open"},
-        {"logical": "sqlite3.conn_close", "symbol": "amsq_conn_close"},
-        {"logical": "sqlite3.conn_free", "symbol": "amsq_conn_free"},
-        {"logical": "sqlite3.conn_closed", "symbol": "amsq_conn_closed"},
-        {"logical": "sqlite3.conn_filename", "symbol": "amsq_conn_filename"},
-        {"logical": "sqlite3.conn_readonly", "symbol": "amsq_conn_readonly"},
-        {"logical": "sqlite3.conn_in_transaction", "symbol": "amsq_conn_in_transaction"},
-        {"logical": "sqlite3.conn_changes", "symbol": "amsq_conn_changes"},
-        {"logical": "sqlite3.conn_total_changes", "symbol": "amsq_conn_total_changes"},
-        {"logical": "sqlite3.conn_last_insert_rowid", "symbol": "amsq_conn_last_insert_rowid"},
-        {"logical": "sqlite3.conn_interrupt", "symbol": "amsq_conn_interrupt"},
-        {"logical": "sqlite3.conn_busy_timeout", "symbol": "amsq_conn_busy_timeout"},
-        {"logical": "sqlite3.conn_exec", "symbol": "amsq_conn_exec"},
-        {"logical": "sqlite3.conn_prepare", "symbol": "amsq_conn_prepare"},
-        {"logical": "sqlite3.conn_probe", "symbol": "amsq_conn_probe"},
-
-        {"logical": "sqlite3.stmt_finalize", "symbol": "amsq_stmt_finalize"},
-        {"logical": "sqlite3.stmt_free", "symbol": "amsq_stmt_free"},
-        {"logical": "sqlite3.stmt_closed", "symbol": "amsq_stmt_closed"},
-        {"logical": "sqlite3.stmt_sql", "symbol": "amsq_stmt_sql"},
-        {"logical": "sqlite3.stmt_column_count", "symbol": "amsq_stmt_column_count"},
-        {"logical": "sqlite3.stmt_column_names", "symbol": "amsq_stmt_column_names"},
-        {"logical": "sqlite3.stmt_column_meta", "symbol": "amsq_stmt_column_meta"},
-        {"logical": "sqlite3.stmt_parameter_count", "symbol": "amsq_stmt_parameter_count"},
-        {"logical": "sqlite3.stmt_parameter_names", "symbol": "amsq_stmt_parameter_names"},
-        {"logical": "sqlite3.stmt_readonly", "symbol": "amsq_stmt_readonly"},
-        {"logical": "sqlite3.stmt_busy", "symbol": "amsq_stmt_busy"},
-        {"logical": "sqlite3.stmt_reset", "symbol": "amsq_stmt_reset"},
-        {"logical": "sqlite3.stmt_clear_bindings", "symbol": "amsq_stmt_clear_bindings"},
-        {"logical": "sqlite3.stmt_bind", "symbol": "amsq_stmt_bind"},
-        {"logical": "sqlite3.stmt_step", "symbol": "amsq_stmt_step"}
+        {
+          "logical": "sqlite3.raise",
+          "symbol": "amsq_raise"
+        },
+        {
+          "logical": "sqlite3.libversion",
+          "symbol": "amsq_libversion"
+        },
+        {
+          "logical": "sqlite3.sourceid",
+          "symbol": "amsq_sourceid"
+        },
+        {
+          "logical": "sqlite3.libversion_number",
+          "symbol": "amsq_libversion_number"
+        },
+        {
+          "logical": "sqlite3.compile_options",
+          "symbol": "amsq_compile_options"
+        },
+        {
+          "logical": "sqlite3.conn_open",
+          "symbol": "amsq_conn_open"
+        },
+        {
+          "logical": "sqlite3.conn_close",
+          "symbol": "amsq_conn_close"
+        },
+        {
+          "logical": "sqlite3.conn_free",
+          "symbol": "amsq_conn_free"
+        },
+        {
+          "logical": "sqlite3.conn_closed",
+          "symbol": "amsq_conn_closed"
+        },
+        {
+          "logical": "sqlite3.conn_filename",
+          "symbol": "amsq_conn_filename"
+        },
+        {
+          "logical": "sqlite3.conn_readonly",
+          "symbol": "amsq_conn_readonly"
+        },
+        {
+          "logical": "sqlite3.conn_in_transaction",
+          "symbol": "amsq_conn_in_transaction"
+        },
+        {
+          "logical": "sqlite3.conn_changes",
+          "symbol": "amsq_conn_changes"
+        },
+        {
+          "logical": "sqlite3.conn_total_changes",
+          "symbol": "amsq_conn_total_changes"
+        },
+        {
+          "logical": "sqlite3.conn_last_insert_rowid",
+          "symbol": "amsq_conn_last_insert_rowid"
+        },
+        {
+          "logical": "sqlite3.conn_interrupt",
+          "symbol": "amsq_conn_interrupt"
+        },
+        {
+          "logical": "sqlite3.conn_busy_timeout",
+          "symbol": "amsq_conn_busy_timeout"
+        },
+        {
+          "logical": "sqlite3.conn_exec",
+          "symbol": "amsq_conn_exec"
+        },
+        {
+          "logical": "sqlite3.conn_prepare",
+          "symbol": "amsq_conn_prepare"
+        },
+        {
+          "logical": "sqlite3.conn_probe",
+          "symbol": "amsq_conn_probe"
+        },
+        {
+          "logical": "sqlite3.stmt_finalize",
+          "symbol": "amsq_stmt_finalize"
+        },
+        {
+          "logical": "sqlite3.stmt_free",
+          "symbol": "amsq_stmt_free"
+        },
+        {
+          "logical": "sqlite3.stmt_closed",
+          "symbol": "amsq_stmt_closed"
+        },
+        {
+          "logical": "sqlite3.stmt_sql",
+          "symbol": "amsq_stmt_sql"
+        },
+        {
+          "logical": "sqlite3.stmt_column_count",
+          "symbol": "amsq_stmt_column_count"
+        },
+        {
+          "logical": "sqlite3.stmt_column_names",
+          "symbol": "amsq_stmt_column_names"
+        },
+        {
+          "logical": "sqlite3.stmt_column_meta",
+          "symbol": "amsq_stmt_column_meta"
+        },
+        {
+          "logical": "sqlite3.stmt_parameter_count",
+          "symbol": "amsq_stmt_parameter_count"
+        },
+        {
+          "logical": "sqlite3.stmt_parameter_names",
+          "symbol": "amsq_stmt_parameter_names"
+        },
+        {
+          "logical": "sqlite3.stmt_readonly",
+          "symbol": "amsq_stmt_readonly"
+        },
+        {
+          "logical": "sqlite3.stmt_busy",
+          "symbol": "amsq_stmt_busy"
+        },
+        {
+          "logical": "sqlite3.stmt_reset",
+          "symbol": "amsq_stmt_reset"
+        },
+        {
+          "logical": "sqlite3.stmt_clear_bindings",
+          "symbol": "amsq_stmt_clear_bindings"
+        },
+        {
+          "logical": "sqlite3.stmt_bind",
+          "symbol": "amsq_stmt_bind"
+        },
+        {
+          "logical": "sqlite3.stmt_step",
+          "symbol": "amsq_stmt_step"
+        },
+        {
+          "logical": "sqlite3.stmt_rows",
+          "symbol": "amsq_stmt_rows"
+        }
       ],
       "types": [
-        {"amber": "sqlite3.Conn", "tag": "sqlite3.Conn", "ownership": "owned", "destructor": "sqlite3.conn_free"},
-        {"amber": "sqlite3.Stmt", "tag": "sqlite3.Stmt", "ownership": "owned", "destructor": "sqlite3.stmt_free"}
+        {
+          "amber": "sqlite3.Conn",
+          "tag": "sqlite3.Conn",
+          "ownership": "owned",
+          "destructor": "sqlite3.conn_free"
+        },
+        {
+          "amber": "sqlite3.Stmt",
+          "tag": "sqlite3.Stmt",
+          "ownership": "owned",
+          "destructor": "sqlite3.stmt_free"
+        }
       ],
       "errors": [
-        {"name": "Sqlite3.Error", "parent": "NativeError"},
-        {"name": "Sqlite3.OpenError", "parent": "Sqlite3.Error"},
-        {"name": "Sqlite3.PrepareError", "parent": "Sqlite3.Error"},
-        {"name": "Sqlite3.BindError", "parent": "Sqlite3.Error"},
-        {"name": "Sqlite3.StepError", "parent": "Sqlite3.Error"},
-        {"name": "Sqlite3.RangeError", "parent": "Sqlite3.BindError"},
-        {"name": "Sqlite3.ConstraintError", "parent": "Sqlite3.StepError"},
-        {"name": "Sqlite3.BusyError", "parent": "Sqlite3.StepError"},
-        {"name": "Sqlite3.LockedError", "parent": "Sqlite3.StepError"},
-        {"name": "Sqlite3.ReadOnlyError", "parent": "Sqlite3.StepError"},
-        {"name": "Sqlite3.InterruptError", "parent": "Sqlite3.StepError"},
-        {"name": "Sqlite3.CorruptError", "parent": "Sqlite3.StepError"},
-        {"name": "Sqlite3.MisuseError", "parent": "Sqlite3.Error"},
-        {"name": "Sqlite3.TransactionError", "parent": "Sqlite3.Error"},
-        {"name": "Sqlite3.JsonError", "parent": "Sqlite3.Error"},
-        {"name": "Sqlite3.JsonUnavailableError", "parent": "Sqlite3.JsonError"},
-        {"name": "Sqlite3.JsonbUnavailableError", "parent": "Sqlite3.JsonError"}
+        {
+          "name": "Sqlite3.Error",
+          "parent": "NativeError"
+        },
+        {
+          "name": "Sqlite3.OpenError",
+          "parent": "Sqlite3.Error"
+        },
+        {
+          "name": "Sqlite3.PrepareError",
+          "parent": "Sqlite3.Error"
+        },
+        {
+          "name": "Sqlite3.BindError",
+          "parent": "Sqlite3.Error"
+        },
+        {
+          "name": "Sqlite3.StepError",
+          "parent": "Sqlite3.Error"
+        },
+        {
+          "name": "Sqlite3.RangeError",
+          "parent": "Sqlite3.BindError"
+        },
+        {
+          "name": "Sqlite3.ConstraintError",
+          "parent": "Sqlite3.StepError"
+        },
+        {
+          "name": "Sqlite3.BusyError",
+          "parent": "Sqlite3.StepError"
+        },
+        {
+          "name": "Sqlite3.LockedError",
+          "parent": "Sqlite3.StepError"
+        },
+        {
+          "name": "Sqlite3.ReadOnlyError",
+          "parent": "Sqlite3.StepError"
+        },
+        {
+          "name": "Sqlite3.InterruptError",
+          "parent": "Sqlite3.StepError"
+        },
+        {
+          "name": "Sqlite3.CorruptError",
+          "parent": "Sqlite3.StepError"
+        },
+        {
+          "name": "Sqlite3.MisuseError",
+          "parent": "Sqlite3.Error"
+        },
+        {
+          "name": "Sqlite3.TransactionError",
+          "parent": "Sqlite3.Error"
+        },
+        {
+          "name": "Sqlite3.JsonError",
+          "parent": "Sqlite3.Error"
+        },
+        {
+          "name": "Sqlite3.JsonUnavailableError",
+          "parent": "Sqlite3.JsonError"
+        },
+        {
+          "name": "Sqlite3.JsonbUnavailableError",
+          "parent": "Sqlite3.JsonError"
+        }
       ]
     }
   ]

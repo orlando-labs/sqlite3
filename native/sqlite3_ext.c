@@ -941,6 +941,46 @@ static AmberValue row_values(AmberCtx *cx, sqlite3_stmt *stmt) {
   return list;
 }
 
+/* rows() -> List of row-value Lists. Steps the statement to completion in one
+ * native call (fewer round-trips than driving step() from Amber). */
+AmberStatus amsq_stmt_rows(AmberCtx *cx, AmberValue self, const AmberValue *args,
+                           size_t argc, AmberValue *out) {
+  (void)args;
+  (void)argc;
+  sqlite3_stmt *stmt = live_stmt(cx, self);
+  if (stmt == NULL) {
+    return AMBER_ERR;
+  }
+  size_t cap = 16;
+  size_t n = 0;
+  AmberValue *rows = (AmberValue *)malloc(cap * sizeof(AmberValue));
+  if (rows == NULL) {
+    return amber_fault(cx, "Sqlite3.Error", "out of memory");
+  }
+  int rc = 0;
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+    if (n == cap) {
+      cap *= 2;
+      AmberValue *grown = (AmberValue *)realloc(rows, cap * sizeof(AmberValue));
+      if (grown == NULL) {
+        free(rows);
+        return amber_fault(cx, "Sqlite3.Error", "out of memory");
+      }
+      rows = grown;
+    }
+    rows[n++] = row_values(cx, stmt);
+  }
+  if (rc != SQLITE_DONE) {
+    AmberStatus st =
+        fault_for_rc(cx, sqlite3_db_handle(stmt), rc, "Sqlite3.StepError");
+    free(rows);
+    return st;
+  }
+  *out = amber_make_list(cx, rows, n);
+  free(rows);
+  return AMBER_OK;
+}
+
 /* step() -> List (row values) on a row, or null when the statement is done. */
 AmberStatus amsq_stmt_step(AmberCtx *cx, AmberValue self, const AmberValue *args,
                            size_t argc, AmberValue *out) {

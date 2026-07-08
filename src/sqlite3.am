@@ -63,6 +63,7 @@ native class Stmt from "sqlite3.Stmt" owned:
   def _clear_bindings() from "sqlite3.stmt_clear_bindings"
   def _bind(values as List) from "sqlite3.stmt_bind"
   def _step() from "sqlite3.stmt_step"
+  def _rows() -> List from "sqlite3.stmt_rows"
 
 # ---------------------------------------------------------- typed SQL values
 
@@ -346,21 +347,11 @@ class Database:
 
   def _insert_core(verb, table, columns, values, returning):
     cols = _as_list(columns)
-    col_sql = []
-    col_names = []
-    cols.each |c|:
-      col_sql.push!(_render_ident(c))
-      col_names.push!(_ident_key(c))
-    rows = _rows_of(values)
+    col_sql = cols.map |c|: _render_ident(c)
+    col_names = cols.map |c|: _ident_key(c)
     binds = []
-    row_frags = []
-    rows.each |row|:
-      vals = _row_values(row, col_names)
-      placeholders = []
-      vals.each |v|:
-        placeholders.push!("?")
-        binds.push!(v)
-      row_frags.push!("(" + placeholders.join(", ") + ")")
+    row_frags = _rows_of(values).map |row|:
+      _row_placeholders(_row_values(row, col_names), binds)
     sql = verb + " INTO " + _render_ident(table) + " (" + col_sql.join(", ") + ") VALUES " + row_frags.join(", ")
     ret = _returning_sql(returning)
     if ret == null:
@@ -373,10 +364,9 @@ class Database:
   # convenience: update / delete -----------------------------------------
   def update(table, set:, where: null, where_not: null, returning: null):
     binds = []
-    assigns = []
-    _require_map(set, "set:").each |k, v|:
-      assigns.push!(_render_ident(k) + " = ?")
+    assigns = _require_map(set, "set:").map |k, v|:
       binds.push!(v)
+      _render_ident(k) + " = ?"
     if assigns.count == 0:
       raise ArgumentError.new("update: set: must not be empty")
     sql = "UPDATE " + _render_ident(table) + " SET " + assigns.join(", ")
@@ -488,13 +478,9 @@ class Statement:
   def query(params: null):
     self._prime(params)
     names = @stmt._column_names()
-    out = []
-    row = @stmt._step()
-    while row != null:
-      out.push!(_zip_row(names, row))
-      row = @stmt._step()
+    rows = @stmt._rows()
     @stmt._reset()
-    out
+    rows.map |row|: _zip_row(names, row)
 
   def query_one(params: null, default: null):
     self._prime(params)
@@ -518,11 +504,7 @@ class Statement:
   def query_arrays(params: null):
     self._prime(params)
     cols = @stmt._column_names()
-    rows = []
-    row = @stmt._step()
-    while row != null:
-      rows.push!(row)
-      row = @stmt._step()
+    rows = @stmt._rows()
     @stmt._reset()
     {columns: cols, rows: rows}
 
@@ -608,15 +590,14 @@ def _open_flags(mode, uri):
   base
 
 def _busy_ms(t):
-  if t == null:
-    return -1
-  case t:
-    when Int:
-      _check_ms(t * 1000)
-    when Float:
-      _check_ms((t * 1000.0).to_int)
-    else:
-      _check_ms((t.total_nanoseconds / 1000000).to_int)
+  when Null:
+    -1
+  when Int:
+    _check_ms(t * 1000)
+  when Float:
+    _check_ms((t * 1000.0).to_int)
+  else:
+    _check_ms((t.total_nanoseconds / 1000000).to_int)
 
 def _check_ms(ms):
   if ms < 0:
@@ -624,13 +605,12 @@ def _check_ms(ms):
   ms
 
 def _text_of(v):
-  case v:
-    when Symbol:
-      v.to_str
-    when Str:
-      v
-    else:
-      v.to_str
+  when Symbol:
+    v.to_str
+  when Str:
+    v
+  else:
+    v.to_str
 
 def _begin_sql(mode):
   if mode == :deferred:
@@ -681,13 +661,13 @@ def _prepare_text(sql):
 # parameter shaping -----------------------------------------------------------
 
 def _positional_params(handle, params):
-  if params == null:
-    return []
   case params:
+    when Null:
+      []
     when Array:
       params
     when Tuple:
-      _seq_to_list(params)
+      params.to_array
     when Map:
       _named_positional(handle, params)
     when StrictMap:
@@ -696,62 +676,56 @@ def _positional_params(handle, params):
       raise ArgumentError.new("params must be a List, Tuple, Map, or null")
 
 def _named_positional(handle, map):
-  out = []
-  handle._parameter_names.each |slot|:
-    if slot == null:
-      raise ArgumentError.new("a named-parameter Map cannot be used with positional (?) placeholders")
-    bare = slot.slice((1..(slot.length - 1)))
-    if map.has_key?(slot):
-      out.push!(map[slot])
-    elif map.has_key?(bare):
-      out.push!(map[bare])
-    else:
-      raise ArgumentError.new("missing bind value for parameter " + slot)
-  out
+  handle._parameter_names.map |slot|:
+    _named_value(map, slot)
+
+def _named_value(map, slot):
+  if slot == null:
+    raise ArgumentError.new("a named-parameter Map cannot be used with positional (?) placeholders")
+  bare = slot.slice((1..(slot.length - 1)))
+  if map.has_key?(slot):
+    map[slot]
+  elif map.has_key?(bare):
+    map[bare]
+  else:
+    raise ArgumentError.new("missing bind value for parameter " + slot)
 
 def _zip_row(names, values):
   row = {}
-  i = 0
-  n = names.count
-  while i < n:
-    row = row.with(names[i], values[i])
-    i = i + 1
+  names.zip(values).each |(name, value)|:
+    row[name] = value
   row
 
 # identifiers -----------------------------------------------------------------
 
 def _render_ident(name):
-  case name:
-    when SqlIdent:
-      name.sql
-    when Symbol:
-      _quote_one(name.to_str)
-    when Str:
-      _quote_one(name)
-    when Array:
-      _render_ident_path(name)
-    when Tuple:
-      _render_ident_path(_seq_to_list(name))
-    else:
-      raise ArgumentError.new("identifier must be a Symbol, Str, List, or SqlIdent")
+  when SqlIdent:
+    name.sql
+  when Symbol:
+    _quote_one(name.to_str)
+  when Str:
+    _quote_one(name)
+  when Array:
+    _render_ident_path(name)
+  when Tuple:
+    _render_ident_path(name.to_array)
+  else:
+    raise ArgumentError.new("identifier must be a Symbol, Str, List, or SqlIdent")
 
 def _render_ident_path(segments):
-  parts = []
-  segments.each |seg|:
-    parts.push!(_render_ident(seg))
-  parts.join(".")
+  rendered = segments.map |seg|: _render_ident(seg)
+  rendered.join(".")
 
 def _quote_one(s):
   "\"" + s.replace("\"", "\"\"") + "\""
 
 def _ident_key(c):
-  case c:
-    when Symbol:
-      c.to_str
-    when Str:
-      c
-    else:
-      _render_ident(c)
+  when Symbol:
+    c.to_str
+  when Str:
+    c
+  else:
+    _render_ident(c)
 
 def _safe_ident(name):
   nm = _text_of(name)
@@ -762,11 +736,7 @@ def _safe_ident(name):
 def _valid_ident(s):
   if s.length == 0:
     return false
-  ok = true
-  s.chars.each |c|:
-    if _ident_char(c) == false:
-      ok = false
-  ok
+  s.chars.all? |c|: _ident_char(c)
 
 def _ident_char(c):
   "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_".contains?(c)
@@ -793,41 +763,31 @@ def _select_sql(table, columns, where, where_not, group_by, having, order, limit
 def _columns_clause(columns):
   if columns == :all:
     return "*"
-  case columns:
-    when Array:
-      _projection_from_list(columns)
-    when Tuple:
-      _projection_from_list(_seq_to_list(columns))
-    else:
-      _column_sql(columns)
+  _projection_clause(columns)
 
 def _projection_clause(cols):
-  case cols:
-    when Array:
-      _projection_from_list(cols)
-    when Tuple:
-      _projection_from_list(_seq_to_list(cols))
-    else:
-      _column_sql(cols)
+  when Array:
+    _render_projection(cols)
+  when Tuple:
+    _render_projection(cols.to_array)
+  else:
+    _column_sql(cols)
 
-def _projection_from_list(cols):
-  parts = []
-  cols.each |c|:
-    parts.push!(_column_sql(c))
-  parts.join(", ")
+def _render_projection(cols):
+  rendered = cols.map |c|: _column_sql(c)
+  rendered.join(", ")
 
 def _column_sql(c):
-  case c:
-    when SqlFragment:
-      c.text
-    when SqlIdent:
-      c.sql
-    when Symbol:
-      _quote_one(c.to_str)
-    when Str:
-      _quote_one(c)
-    else:
-      raise ArgumentError.new("invalid column expression")
+  when SqlFragment:
+    c.text
+  when SqlIdent:
+    c.sql
+  when Symbol:
+    _quote_one(c.to_str)
+  when Str:
+    _quote_one(c)
+  else:
+    raise ArgumentError.new("invalid column expression")
 
 def _where_clause(where, where_not, binds):
   clauses = []
@@ -854,62 +814,59 @@ def _predicate_sql(pred, binds):
       raise ArgumentError.new("predicate must be a Map or a fragment")
 
 def _map_predicate(map, binds):
-  parts = []
-  map.each |k, v|:
-    col = _render_ident(k)
-    if v == null:
-      parts.push!(col + " IS NULL")
-    else:
-      case v:
-        when Array:
-          parts.push!(_in_predicate(col, v, binds))
-        when Tuple:
-          parts.push!(_in_predicate(col, _seq_to_list(v), binds))
-        else:
-          parts.push!(col + " = ?")
-          binds.push!(v)
+  parts = map.map |k, v|: _map_term(_render_ident(k), v, binds)
   if parts.count == 0:
     "1 = 1"
   else:
     parts.join(" AND ")
 
+def _map_term(col, v, binds):
+  if v == null:
+    return col + " IS NULL"
+  case v:
+    when Array:
+      _in_predicate(col, v, binds)
+    when Tuple:
+      _in_predicate(col, v.to_array, binds)
+    else:
+      binds.push!(v)
+      col + " = ?"
+
 def _in_predicate(col, seq, binds):
   if seq.count == 0:
     return "0 = 1"
-  ph = []
-  seq.each |v|:
-    ph.push!("?")
+  placeholders = seq.map |v|:
     binds.push!(v)
-  col + " IN (" + ph.join(", ") + ")"
+    "?"
+  col + " IN (" + placeholders.join(", ") + ")"
 
 def _order_clause(order):
-  case order:
-    when SqlFragment:
-      order.text
-    when SqlIdent:
-      order.sql
-    when Symbol:
-      _quote_one(order.to_str)
-    when Str:
-      _quote_one(order)
-    when Array:
-      _order_list(order)
-    when Tuple:
-      _order_list(_seq_to_list(order))
-    else:
-      raise ArgumentError.new("invalid order expression")
+  when SqlFragment:
+    order.text
+  when SqlIdent:
+    order.sql
+  when Symbol:
+    _quote_one(order.to_str)
+  when Str:
+    _quote_one(order)
+  when Array:
+    _render_order(order)
+  when Tuple:
+    _render_order(order.to_array)
+  else:
+    raise ArgumentError.new("invalid order expression")
 
-def _order_list(items):
-  parts = []
-  items.each |item|:
-    case item:
-      when Array:
-        parts.push!(_render_ident(item[0]) + " " + _dir_sql(item[1]))
-      when Tuple:
-        parts.push!(_render_ident(item[0]) + " " + _dir_sql(item[1]))
-      else:
-        parts.push!(_render_ident(item))
-  parts.join(", ")
+def _render_order(items):
+  rendered = items.map |item|: _order_term(item)
+  rendered.join(", ")
+
+def _order_term(item):
+  when Array:
+    _render_ident(item[0]) + " " + _dir_sql(item[1])
+  when Tuple:
+    _render_ident(item[0]) + " " + _dir_sql(item[1])
+  else:
+    _render_ident(item)
 
 def _dir_sql(dir):
   if dir == :asc:
@@ -924,55 +881,56 @@ def _returning_sql(returning):
     return null
   if returning == :all:
     return "*"
-  parts = []
-  _as_list(returning).each |r|:
-    parts.push!(_column_sql(r))
-  parts.join(", ")
+  rendered = _as_list(returning).map |r|: _column_sql(r)
+  rendered.join(", ")
 
 def _int_literal(n):
-  case n:
-    when Int:
-      if n < 0:
-        raise ArgumentError.new("limit/offset must be non-negative")
-      n.to_str
-    else:
-      raise ArgumentError.new("limit/offset must be a non-negative Int")
+  when Int:
+    if n < 0:
+      raise ArgumentError.new("limit/offset must be non-negative")
+    n.to_str
+  else:
+    raise ArgumentError.new("limit/offset must be a non-negative Int")
 
 # row/value normalization -----------------------------------------------------
 
 def _rows_of(values):
-  case values:
-    when Map:
-      [values]
-    when StrictMap:
-      [values]
-    when Array:
-      _rows_from_seq(values)
-    when Tuple:
-      _rows_from_seq(_seq_to_list(values))
-    else:
-      raise ArgumentError.new("values must be a row or a list of rows")
+  when Map:
+    [values]
+  when StrictMap:
+    [values]
+  when Array:
+    _rows_from_seq(values)
+  when Tuple:
+    _rows_from_seq(values.to_array)
+  else:
+    raise ArgumentError.new("values must be a row or a list of rows")
 
 def _rows_from_seq(seq):
   if seq.count == 0:
     raise ArgumentError.new("values must not be empty")
   if _is_row(seq[0]):
-    _seq_to_list(seq)
+    seq.to_array
   else:
     [seq]
 
 def _is_row(v):
-  case v:
-    when Array:
-      true
-    when Tuple:
-      true
-    when Map:
-      true
-    when StrictMap:
-      true
-    else:
-      false
+  when Array:
+    true
+  when Tuple:
+    true
+  when Map:
+    true
+  when StrictMap:
+    true
+  else:
+    false
+
+def _row_placeholders(vals, binds):
+  placeholders = vals.map |v|:
+    binds.push!(v)
+    "?"
+  "(" + placeholders.join(", ") + ")"
 
 def _row_values(row, col_names):
   case row:
@@ -983,40 +941,39 @@ def _row_values(row, col_names):
     when Array:
       _seq_row_values(row, col_names)
     when Tuple:
-      _seq_row_values(_seq_to_list(row), col_names)
+      _seq_row_values(row.to_array, col_names)
     else:
       raise ArgumentError.new("row must be a List, Tuple, or Map")
 
 def _seq_row_values(row, col_names):
   if row.count != col_names.count:
     raise ArgumentError.new("row size does not match the number of columns")
-  _seq_to_list(row)
+  row.to_array
 
 def _map_row_values(row, col_names):
-  out = []
-  col_names.each |name|:
-    if row.has_key?(name):
-      out.push!(row[name])
-    else:
-      raise ArgumentError.new("row is missing a value for column " + name)
-  out
+  col_names.map |name|: _fetch_column(row, name)
+
+def _fetch_column(row, name):
+  if row.has_key?(name):
+    row[name]
+  else:
+    raise ArgumentError.new("row is missing a value for column " + name)
 
 def _pragma_value_sql(v):
-  case v:
-    when Bool:
-      _bool_sql(v)
-    when Int:
-      v.to_str
-    when Float:
-      v.to_str
-    when Symbol:
-      _safe_ident(v)
-    when Str:
-      "'" + v.replace("'", "''") + "'"
-    when Null:
-      "NULL"
-    else:
-      raise ArgumentError.new("unsupported pragma value")
+  when Bool:
+    _bool_sql(v)
+  when Int:
+    v.to_str
+  when Float:
+    v.to_str
+  when Symbol:
+    _safe_ident(v)
+  when Str:
+    "'" + v.replace("'", "''") + "'"
+  when Null:
+    "NULL"
+  else:
+    raise ArgumentError.new("unsupported pragma value")
 
 def _bool_sql(v):
   if v:
@@ -1034,16 +991,9 @@ def _require_map(v, label):
       raise ArgumentError.new(label + " must be a Map")
 
 def _as_list(v):
-  case v:
-    when Array:
-      v
-    when Tuple:
-      _seq_to_list(v)
-    else:
-      [v]
-
-def _seq_to_list(seq):
-  out = []
-  seq.each |x|:
-    out.push!(x)
-  out
+  when Array:
+    v
+  when Tuple:
+    v.to_array
+  else:
+    [v]
