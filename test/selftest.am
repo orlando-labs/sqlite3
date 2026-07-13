@@ -1,13 +1,22 @@
 package sqlite3.selftest
 
 import sqlite3
-from sqlite3 import fragment, ident, quote_identifier
+from sqlite3 import fragment, ident, quote_identifier, sql
 
 export main
 
 # Each check adds 1 to the score on success. main returns the total; the build
 # harness asserts it equals EXPECTED below.
-EXPECTED = 27
+EXPECTED = 35
+
+class QueryProbe:
+  attr executions
+
+  def init():
+    @executions = []
+  def instrument(execution, &execute):
+    @executions.push!(execution)
+    execute()
 
 def check(score, cond):
   if cond:
@@ -24,7 +33,23 @@ def main():
   feats = sqlite3.features()
   score = check(score, feats[:adapter] == :sqlite3 and feats[:placeholder_style] == :qmark)
 
+  sqlite3.open(fs.Path(":memory:")) |path_db|:
+    path_db.exec("create table from_path(v integer)")
+    path_db.execute("insert into from_path(v) values (?)", params: [7])
+    score = check(score, path_db.scalar("select v from from_path") == 7)
+
+  sqlite3.connect(fs.Path(":memory:")) |path_db|:
+    path_db.exec("create table from_connect(v integer)")
+    path_db.execute("insert into from_connect(v) values (?)", params: [9])
+    score = check(score, path_db.scalar("select v from from_connect") == 9)
+
   sqlite3.memory() |db|:
+    query_probe = QueryProbe()
+    db.instrument_queries!(query_probe)
+    probed = db.scalar("select ?", params: [42])
+    db.instrument_queries!(null)
+    score = check(score, probed == 42 and query_probe.executions.count == 1 and query_probe.executions[0].sql == "select ?" and query_probe.executions[0].params[0] == 42)
+
     # --- schema + typed values ------------------------------------------
     db.exec("create table users(id integer primary key, name text, age integer, data blob)")
     score = check(score, db.json_available?())
@@ -74,7 +99,7 @@ def main():
     try:
       db.transaction() |tx|:
         tx.execute("insert into users(name, age) values (?, ?)", params: ["Ghost", 1])
-        raise ValueError.new("abort")
+        raise ValueError("abort")
     rescue ValueError |e|:
       rolled = 1
     score = check(score, rolled == 1 and db.scalar("select count(*) from users") == before)
@@ -84,6 +109,22 @@ def main():
       tx.savepoint() |sp|:
         sp.execute("update users set age = age + 1 where name = ?", params: ["Ada"])
     score = check(score, db.scalar("select age from users where name = ?", params: ["Ada"]) == 37)
+
+    execute_row_error = 0
+    try:
+      db.execute("select 1")
+    rescue Sqlite3.StepError |e|:
+      execute_row_error = 1
+    score = check(score, execute_row_error == 1)
+
+    nested_mode_error = 0
+    try:
+      db.transaction() |tx|:
+        tx.transaction(mode: :immediate) |inner|:
+          inner.execute("select 1")
+    rescue Sqlite3.TransactionError |e|:
+      nested_mode_error = 1
+    score = check(score, nested_mode_error == 1)
 
     # --- convenience: insert -------------------------------------------
     db.exec("create table t(a text, b text)")
@@ -111,6 +152,11 @@ def main():
     older = db.select(:users, where: {age: [36, 37, 41]}, order: [[:age, :desc]])
     score = check(score, older.count() >= 2 and older[0][:age] >= older[1][:age])
 
+    db.exec("create table flags(ok integer)")
+    db.insert(:flags, columns: [:ok], values: [[false], [true]])
+    off = db.select(:flags, where: {ok: false})
+    score = check(score, off.count() == 1)
+
     got = db.get(:users, where: {name: "June"})
     score = check(score, got[:age] == 29)
 
@@ -124,6 +170,25 @@ def main():
     frag = fragment("select id, name, age from users where age > ?", [30])
     adults = db.query(frag)
     score = check(score, adults.count() >= 1)
+
+    threshold = 30
+    tagged = db.query(sql"""
+      select id, name, age
+      from users
+      where age > #{threshold}
+      order by id
+      """)
+    score = check(score, tagged.count() == 3 and tagged[0][:name] == "Ada")
+
+    tagged_count = db.select(:users,
+      columns: [sql"""
+        count(*) as n
+        """],
+      where: sql"""
+        age > #{threshold}
+        """
+    )
+    score = check(score, tagged_count[0][:n] == 3)
 
     counts = db.select(:users, columns: [:name, fragment("length(name) as nlen")], where: {name: "Ada"})
     score = check(score, counts[0]["nlen"] == 3)

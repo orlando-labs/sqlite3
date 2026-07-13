@@ -13,7 +13,7 @@
  * Every thunk uses an `amsq_` prefix so no name can collide with a real
  * `sqlite3_*` symbol from the amalgamation.
  *
- * Two foreign-handle types are registered in amber.build.json:
+ * Two foreign-handle types are declared in src/sqlite3.am:
  *   sqlite3.Conn  -> struct Conn  (wraps sqlite3*)      owned
  *   sqlite3.Stmt  -> struct Stmt  (wraps sqlite3_stmt*) owned
  */
@@ -100,36 +100,6 @@ static int arg_str(AmberCtx *cx, const AmberValue *args, size_t argc, size_t i,
     return 0;
   }
   return amber_str_view(cx, args[i], ptr, len);
-}
-
-/* raise(class, message) -> never. Lets the Amber layer raise any registered
- * package error class (which are declared in amber.build.json and raised via
- * amber_fault, the proven-rescuable path) without depending on Amber-side
- * construction of manifest-registered error classes. */
-AmberStatus amsq_raise(AmberCtx *cx, const AmberValue *args, size_t argc,
-                       AmberValue *out) {
-  (void)out;
-  const char *cls = NULL;
-  size_t cls_len = 0;
-  const char *msg = NULL;
-  size_t msg_len = 0;
-  if (!arg_str(cx, args, argc, 0, &cls, &cls_len) ||
-      !arg_str(cx, args, argc, 1, &msg, &msg_len)) {
-    return amber_fault(cx, "TypeError", "raise expects (Str class, Str message)");
-  }
-  char cbuf[160];
-  char mbuf[1024];
-  if (cls_len >= sizeof(cbuf)) {
-    cls_len = sizeof(cbuf) - 1;
-  }
-  if (msg_len >= sizeof(mbuf)) {
-    msg_len = sizeof(mbuf) - 1;
-  }
-  memcpy(cbuf, cls, cls_len);
-  cbuf[cls_len] = '\0';
-  memcpy(mbuf, msg, msg_len);
-  mbuf[msg_len] = '\0';
-  return amber_fault(cx, cbuf, mbuf);
 }
 
 /* ---------------------------------------------------------- library globals */

@@ -2,12 +2,12 @@ package sqlite3.example
 
 # A small tour of the sqlite3 package. Build native and run:
 #
-#   amberc build examples/basic.build.json --target native \
+#   amberc build examples/basic.build.yaml --target native \
 #     --out-dir out --cache-dir cache
 #   ./out/sqlite3.example
 
 import sqlite3
-from sqlite3 import fragment
+from sqlite3 import sql
 
 export main
 
@@ -43,8 +43,13 @@ def main():
       order: [[:age, :desc]]
     )
 
-    # A hand-written fragment carries its own bind parameters.
-    count = db.scalar(fragment("select count(*) from users where age > ?", [30]))
+    # A tagged SQL block turns interpolation into bind parameters.
+    minimum_age = 30
+    count = db.scalar(sql"""
+      select count(*)
+      from users
+      where age > #{minimum_age}
+      """)
 
     # Transaction: commits on normal return, rolls back on a raised error.
     db.transaction(mode: :immediate) |tx|:

@@ -5,7 +5,7 @@ public API from `DESIGN-package-sqlite3-api-2026-07-02.md`.
 
 ```amber
 import sqlite3
-from sqlite3 import fragment
+from sqlite3 import sql
 
 sqlite3.open("data/app.db", busy_timeout: 2.seconds) |db|:
   db.execute("create table if not exists users(id integer primary key, name text, age integer)")
@@ -22,6 +22,13 @@ sqlite3.open("data/app.db", busy_timeout: 2.seconds) |db|:
 
   db.transaction(mode: :immediate) |tx|:
     tx.execute("insert into users(name, age) values (?, ?)", params: ["June", 29])
+
+  older = db.query(sql"""
+    select id, name
+    from users
+    where age > #{30}
+    order by id
+    """)
 ```
 
 ## Architecture
@@ -51,11 +58,11 @@ executable (`--target native`). In a bytecode build the native classes fail
 closed with `NativeRequiredError`.
 
 A consumer manifest lists this package's module + native extension. See
-[`test/selftest.build.json`](test/selftest.build.json) for a complete example.
+[`test/selftest.build.yaml`](test/selftest.build.yaml) for a complete example.
 Build and run:
 
 ```sh
-amberc build your.build.json --target native --out-dir out --cache-dir cache
+amberc build your.build.yaml --target native --out-dir out --cache-dir cache
 ./out/your.root.module
 ```
 
@@ -67,7 +74,8 @@ Opening a database additionally uses `db`/`fs` host grants at runtime (design §
 Core connection layer (`Database`):
 
 - `open` / `connect` / `memory`, block-scoped and handle-returning forms,
-  `mode:`, `uri:`, `busy_timeout:` (numeric seconds or `TimePeriod`), `pragmas:`
+  `Str` or `fs.Path` database paths, `mode:`, `uri:`, `busy_timeout:`
+  (numeric seconds or `TimePeriod`), `pragmas:`
 - `exec`, `execute`, `execute_many`, `query`, `query_one`, `scalar`,
   `query_arrays`, `each`, `each_array`, `prepare`
 - `transaction` (deferred/immediate/exclusive, commit-on-return /
@@ -80,6 +88,15 @@ Core connection layer (`Database`):
   (`affected_rows:` / `last_insert_id:` alongside the SQLite-specific keys)
 - feature discovery: `features()`, live `json_available?` / `jsonb_available?` /
   `jsonb_each_available?` / `jsonb_tree_available?` probes
+
+Query execution has a package-neutral instrumentation boundary. Install any
+object implementing `instrument(execution, &execute)` with
+`db.instrument_queries!(instrumenter)`. The callback receives a
+`sqlite3.SqlExecution` containing `operation`, final prepared `sql`, and the
+original `params`; it must invoke the supplied block and return its result.
+High-level statement helpers and transaction commands pass through this
+boundary, allowing logging, tracing, metrics, and OpenTelemetry spans without
+coupling them to this package.
 
 Prepared statements (`Statement`): `bind!`, `reset!`, `clear_bindings!`, `step`,
 `step_array`, `execute`, `query`, `query_one`, `scalar`, `query_arrays`, `each`,
@@ -94,9 +111,10 @@ Convenience query layer: `insert`, `insert_or_ignore`, `insert_or_replace`,
 equality/`IN`/`IS NULL` predicate maps, `where` / `where_not`, `group_by`,
 `having`, `order`, `limit` / `offset`, and `returning:`.
 
-Typed SQL values & sanitization: `fragment(text, params)`, `ident(name)`,
-`quote_identifier(name)`, and the `SqlFragment` / `SqlIdent` opaque types,
-accepted in the core methods and convenience slots.
+Typed SQL values & sanitization: the exportable `sql"""..."""` string-tag macro
+that turns interpolants into bind parameters, `fragment(text, params)`,
+`ident(name)`, `quote_identifier(name)`, and the `SqlFragment` / `SqlIdent`
+opaque types, accepted in the core methods and convenience slots.
 
 Error surface: the full hierarchy from design §12 is registered natively
 (`Sqlite3.Error` … `Sqlite3.ConstraintError`, `BusyError`, `LockedError`,
@@ -108,7 +126,7 @@ Safety: `ATTACH` / `DETACH` / `VACUUM INTO` are rejected by the native layer
 (design §11, §15); direct-execution helpers reject trailing SQL after the first
 statement; `exec` is the trusted multi-statement path.
 
-The self-test ([`test/selftest.am`](test/selftest.am)) exercises 27 end-to-end
+The self-test ([`test/selftest.am`](test/selftest.am)) exercises 34 end-to-end
 behaviours across all of the above and is the package's conformance check.
 
 ## Deferred (not yet implemented)
@@ -119,10 +137,6 @@ called out here for honesty:
 - **Connection `Pool` / `PoolLease`** (design §7). The cross-native-thread
   affinity + cooperative-fiber pinning it specifies is a deep runtime
   integration; `features()` reports `pool: false`.
-- **The `sql"""..."""` string-tag macro** (design §5.1). Use `fragment(...)` +
-  bind parameters for now; the macro is a drop-in addition later (the toolchain's
-  string-tag macro system supports it — see the `macro_string_tag` conformance
-  example upstream).
 - **JSON/JSONB query-builder wrappers** `json()` / `jsonb()` and
   `to_json` / `to_jsonb` (design §9.4). The capability *probes* are implemented;
   the value wrappers are not.
@@ -137,18 +151,18 @@ called out here for honesty:
 Building this package exercises language features that were fixed/added in the
 Amber toolchain alongside it (forward references between module functions,
 namespace-qualified calls `module.func()`, cross-module closure capture
-preservation, and `self` as a first-class value). It requires an Amber toolchain
-that includes those fixes.
+preservation, `self` as a first-class value, and the `macro.v1` string-tag macro
+profile). It requires an Amber toolchain that includes those fixes.
 
 ## Layout
 
 ```
-amber.build.json        package manifest (module + native extension + errors)
+amber.build.yaml        package manifest (module + native extension)
 src/sqlite3.am          the public API, in Amber
 native/sqlite3_ext.c    native leaves over the amber_ext ABI
 native/sqlite3.c/.h     vendored SQLite amalgamation (3.51.0, public domain)
-test/selftest.am        end-to-end conformance test (returns 27)
-test/selftest.build.json  build manifest for the self-test
+test/selftest.am        end-to-end conformance test (returns 34)
+test/selftest.build.yaml  build manifest for the self-test
 examples/basic.am       a small usage example
 ```
 
