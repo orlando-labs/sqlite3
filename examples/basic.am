@@ -2,7 +2,7 @@ package sqlite3.example
 
 # A small tour of the sqlite3 package. Build native and run:
 #
-#   amberc build examples/basic.build.yaml --target native \
+#   amberc build examples/basic.build.yaml --target native --require-full-native \
 #     --out-dir out --cache-dir cache
 #   ./out/sqlite3.example
 

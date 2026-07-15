@@ -1,0 +1,153 @@
+package sqlite3.pool_selftest
+
+import sqlite3
+import task
+
+export main
+
+EXPECTED = 16
+
+def check(score, condition):
+  if condition then score + 1 else score
+
+def write_rows(pool, prefix, count):
+  index = 0
+  while index < count:
+    pool.execute("insert into jobs(label) values (?)", params: [prefix + index.to_str])
+    index += 1
+  count
+
+def main():
+  score = 0
+
+  sqlite3.memory_pool(
+    name: "sqlite3_amber_pool_selftest",
+    min_size: 1,
+    max_size: 3,
+    checkout_timeout: 0.5,
+    busy_timeout: 1.0
+  ) |pool|:
+    score = check(score,
+      pool.features()[:pool] and
+      pool.features()[:pool_affinity] == :lease and
+      pool.features()[:pool_context] == :task_local)
+    score = check(score, pool.stats()[:open] == 1 and pool.stats()[:idle] == 1)
+
+    pool.exec("create table jobs(id integer primary key, label text)")
+
+    # Pool is safe to capture in new-strand work. Each task gets an exclusive
+    # lease, while SQLite's busy timeout arbitrates concurrent writers.
+    first = task.spawn:
+      write_rows(pool, "a", 12)
+    second = task.spawn:
+      write_rows(pool, "b", 12)
+    score = check(score, first.wait() + second.wait() == 24)
+    score = check(score, pool.scalar("select count(*) from jobs") == 24)
+
+    scoped_one = task.spawn:
+      pool.checkout() |db|:
+        db.exec("create temp table if not exists scoped(value integer)")
+        db.exec("delete from scoped")
+        db.execute("insert into scoped(value) values (101)")
+        task.sleep(0.005)
+        db.scalar("select value from scoped")
+    scoped_two = task.spawn:
+      pool.checkout() |db|:
+        db.exec("create temp table if not exists scoped(value integer)")
+        db.exec("delete from scoped")
+        db.execute("insert into scoped(value) values (202)")
+        task.sleep(0.005)
+        db.scalar("select value from scoped")
+    score = check(score, scoped_one.wait() + scoped_two.wait() == 303)
+
+    # The task-local binding follows the logical task across suspension. Calls
+    # through the Pool must still see this checkout's temp schema and lease.
+    scoped = pool.checkout() |db|:
+      db.exec("create temp table sticky(value integer)")
+      db.execute("insert into sticky(value) values (41)")
+      task.sleep(0.01)
+      pool.scalar("select value + 1 from sticky")
+    score = check(score, scoped == 42)
+
+    # Nested checkout and Pool executor calls reuse the logical task's lease.
+    nested_checkout = pool.checkout() |outer|:
+      outer.exec("create temp table nested_checkout(value integer)")
+      outer.execute("insert into nested_checkout(value) values (17)")
+      pool.checkout() |inner|:
+        pool.stats()[:leased] == 1 and inner.scalar("select value from nested_checkout") == 17
+    score = check(score, nested_checkout)
+
+    pool.transaction(mode: :immediate) |tx|:
+      # The executor surface resolves to tx without passing it explicitly.
+      pool.execute("insert into jobs(label) values (?)", params: ["transactional"])
+      score = check(score,
+        tx.in_transaction?() and
+        pool.scalar("select count(*) from jobs where label = 'transactional'") == 1 and
+        pool.stats()[:leased] == 1)
+    score = check(score, pool.scalar("select count(*) from jobs where label = 'transactional'") == 1)
+
+    # Nested Pool transactions become savepoints on the same connection.
+    nested_rolled_back = false
+    pool.transaction() |outer|:
+      pool.execute("insert into jobs(label) values ('outer-transaction')")
+      try:
+        pool.transaction() |inner|:
+          pool.execute("insert into jobs(label) values ('inner-transaction')")
+          raise ValueError("rollback savepoint")
+      rescue ValueError |e|:
+        nested_rolled_back = true
+    score = check(score,
+      nested_rolled_back and
+      pool.scalar("select count(*) from jobs where label = 'outer-transaction'") == 1 and
+      pool.scalar("select count(*) from jobs where label = 'inner-transaction'") == 0)
+
+    # Exclusive task-local bindings are not inherited by task.spawn. The child
+    # can therefore obtain a second lease while its parent owns a transaction.
+    child_leases = pool.transaction() |tx|:
+      child = task.spawn:
+        pool.checkout() |child_db|:
+          pool.stats()[:leased]
+      child.wait()
+    score = check(score, child_leases == 2)
+
+    # Release hygiene: unfinished transactions are rolled back and statements
+    # prepared by an escaped Database are closed before the connection is idle.
+    lease = pool.acquire()
+    leased_db = lease.db()
+    leased_db.begin!()
+    leased_db.execute("insert into jobs(label) values (?)", params: ["rolled-back"])
+    escaped_statement = leased_db.prepare("select 1")
+    lease.release!()
+    score = check(score, pool.scalar("select count(*) from jobs where label = 'rolled-back'") == 0)
+    statement_closed = false
+    try:
+      escaped_statement.scalar()
+    rescue LifetimeError |e|:
+      statement_closed = true
+    score = check(score, statement_closed)
+
+    # Manual leases are idempotent, and exhausting max_size observes a finite
+    # per-call timeout without blocking a scheduler worker.
+    one = pool.acquire()
+    two = pool.acquire()
+    three = pool.acquire()
+    timed_out = false
+    try:
+      pool.acquire(timeout: 0)
+    rescue Sqlite3.PoolTimeoutError |e|:
+      timed_out = true
+    score = check(score, timed_out and pool.stats()[:leased] == 3)
+    one.release!()
+    one.release!()
+    two.discard!()
+    three.release!()
+    closed_lease = pool.acquire()
+    closed_db = closed_lease.db()
+    closed_db.destroy!()
+    closed_lease.release!()
+    score = check(score, pool.stats()[:leased] == 0)
+
+    disconnected = pool.disconnect!()
+    score = check(score, disconnected[:closed] >= 1 and pool.stats()[:open] == 0)
+
+  score

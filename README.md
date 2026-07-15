@@ -31,6 +31,20 @@ sqlite3.open("data/app.db", busy_timeout: 2.seconds) |db|:
     """)
 ```
 
+For concurrent applications, use a pool directly as the database executor:
+
+```amber
+import task
+import sqlite3
+
+sqlite3.pool("data/app.db", min_size: 1, max_size: 10) |pool|:
+  jobs = user_ids.map |id|:
+    task.spawn:
+      pool.get(:users, where: {id: id})
+
+  users = jobs.map |job|: job.wait()
+```
+
 ## Architecture
 
 The `amber_ext` ABI exposes only `null`/`Bool`/`Int`/`Float`/`Str`/`Bytes`/`List`
@@ -40,8 +54,8 @@ side ([`native/sqlite3_ext.c`](native/sqlite3_ext.c)) is a thin set of low-level
 rows leave as a `List` of column-value `List`s. Everything a user touches —
 name-indifferent row `Map`s, named parameters, keyword arguments, transactions,
 the convenience SQL builders, and the typed error hierarchy — is built in Amber
-([`src/sqlite3.am`](src/sqlite3.am)) over two private native-handle classes,
-`Conn` (a `sqlite3*`) and `Stmt` (a `sqlite3_stmt*`).
+([`src/sqlite3.am`](src/sqlite3.am)) over private native-handle classes for
+connections, statements, shared pool state, and generation-checked leases.
 
 This mirrors the design's first anchor: *the Amber source is the public API; C is
 only the implementation of native-only leaves.*
@@ -52,19 +66,23 @@ consumer binary is self-contained and reproducible.
 
 ## Building & importing
 
-This is a native-only package: `Database`, `Statement`, `Conn`, and `Stmt` are
-`native class ... owned`, so a program that uses it must be built as a native
-executable (`--target native`). In a bytecode build the native classes fail
-closed with `NativeRequiredError`.
+This is a native-only package: its low-level connection, statement, pool, and
+lease handles are native classes, so a program that uses it must be built as a
+native executable (`--target native`). In a bytecode build the native classes
+fail closed with `NativeRequiredError`.
 
 A consumer manifest lists this package's module + native extension. See
 [`test/selftest.build.yaml`](test/selftest.build.yaml) for a complete example.
 Build and run:
 
 ```sh
-amberc build your.build.yaml --target native --out-dir out --cache-dir cache
+amberc build your.build.yaml --target native --require-full-native \
+  --out-dir out --cache-dir cache
 ./out/your.root.module
 ```
+
+The core, pool, concurrent example, and `amber-orm` integration graphs all pass
+the strict full-native gate with zero fallback code objects.
 
 Capabilities: the package requires the `ffi.v1` profile feature (it links C).
 Opening a database additionally uses `db`/`fs` host grants at runtime (design §11).
@@ -89,6 +107,26 @@ Core connection layer (`Database`):
 - feature discovery: `features()`, live `json_available?` / `jsonb_available?` /
   `jsonb_each_available?` / `jsonb_tree_available?` probes
 
+Connection pool (`Pool` / `PoolLease`):
+
+- `pool` and `memory_pool`, with block-scoped lifecycle or handle-returning
+  forms; lazy growth from `min_size:` to `max_size:`
+- scoped `checkout` / `with_connection` and manual `acquire`; finite default or
+  per-call checkout timeouts with `PoolTimeoutError`
+- safe capture by `task.spawn`, bounded retry waiting through `task.sleep`, and
+  exclusive lease ownership of every physical SQLite connection
+- scoped `checkout` / `transaction` installs a non-inheritable logical
+  task-local connection context that survives suspension and worker migration
+- nested Pool/ORM calls automatically reuse the current task's checkout or
+  transaction, while a `task.spawn` child acquires its own lease
+- the common `Database` executor surface (`query`, `execute`, CRUD helpers,
+  `transaction`, and block-scoped `prepare`) directly on `Pool`
+- `stats`, `prune!`, `disconnect!`, `drain!`, idle timeout, maximum lifetime,
+  startup pragmas, busy timeout, and pool-wide query instrumentation
+- release hygiene: open statements are finalized, active transactions are
+  rolled back, unhealthy/closed/expired connections are discarded, and release
+  is idempotent
+
 Query execution has a package-neutral instrumentation boundary. Install any
 object implementing `instrument(execution, &execute)` with
 `db.instrument_queries!(instrumenter)`. The callback receives a
@@ -96,7 +134,8 @@ object implementing `instrument(execution, &execute)` with
 original `params`; it must invoke the supplied block and return its result.
 High-level statement helpers and transaction commands pass through this
 boundary, allowing logging, tracing, metrics, and OpenTelemetry spans without
-coupling them to this package.
+coupling them to this package. The same method exists on `Pool`; every checked-out
+`Database` inherits the current instrumenter.
 
 Prepared statements (`Statement`): `bind!`, `reset!`, `clear_bindings!`, `step`,
 `step_array`, `execute`, `query`, `query_one`, `scalar`, `query_arrays`, `each`,
@@ -119,40 +158,125 @@ opaque types, accepted in the core methods and convenience slots.
 Error surface: the full hierarchy from design §12 is registered natively
 (`Sqlite3.Error` … `Sqlite3.ConstraintError`, `BusyError`, `LockedError`,
 `ReadOnlyError`, `RangeError`, `MisuseError`, `InterruptError`, `CorruptError`,
-`TransactionError`, `Json*Error`), with SQLite result-code mapping. Rescue by the
-registered name, e.g. `rescue Sqlite3.ConstraintError |e|:`.
+`TransactionError`, `Pool*Error`, `Json*Error`), with SQLite result-code mapping.
+Rescue by the registered name, e.g. `rescue Sqlite3.ConstraintError |e|:`.
 
 Safety: `ATTACH` / `DETACH` / `VACUUM INTO` are rejected by the native layer
 (design §11, §15); direct-execution helpers reject trailing SQL after the first
 statement; `exec` is the trusted multi-statement path.
 
-The self-test ([`test/selftest.am`](test/selftest.am)) exercises 34 end-to-end
-behaviours across all of the above and is the package's conformance check.
+The core self-test ([`test/selftest.am`](test/selftest.am)) exercises 35
+end-to-end behaviours. [`test/pool_selftest.am`](test/pool_selftest.am) adds
+concurrent tasks, timeout, scoped leases, cleanup, and maintenance checks;
+[`test/orm_pool_selftest.am`](test/orm_pool_selftest.am) verifies direct
+`amber-orm` integration and task-local transactional routing.
+
+## Pool API and concurrency model
+
+The scoped form is the default:
+
+```amber
+sqlite3.pool("data/app.db",
+  min_size: 1,
+  max_size: 10,
+  checkout_timeout: 2.0,
+  idle_timeout: 60.0,
+  max_lifetime: 30.minutes,
+  busy_timeout: 2.0,
+  pragmas: {foreign_keys: true, journal_mode: :wal}
+) |pool|:
+  pool.checkout |db|:
+    db.query("select id, email from users")
+
+  pool.transaction(mode: :immediate):
+    # Calls through pool resolve to this logical task's transaction.
+    pool.execute("insert into audit(message) values (?)", params: ["created"])
+```
+
+`checkout_timeout: null` means unlimited waiting. Duration options accept
+numeric seconds or `TimePeriod`; `idle_timeout: null` and `max_lifetime: null`
+disable their respective retirement rule. `min_size` is warmed on construction
+and retained against idle pruning; a connection discarded after an error is
+recreated lazily on demand.
+
+Manual leases are available for framework internals, but should stay within the
+task that acquired them:
+
+```amber
+lease = pool.acquire(timeout: 0.5)
+try:
+  lease.db().scalar("select 1")
+ensure:
+  lease.release!()
+```
+
+`Pool` is the shareable boundary. `Database`, `Statement`, and `PoolLease` must
+not be sent to sibling tasks. Each Pool owns a non-inheritable `task.local`
+slot: a scoped checkout installs its connection there, and the binding follows
+the logical task across suspension and worker migration. Nested calls through
+the Pool reuse that connection. A `task.spawn` child deliberately starts
+without the binding and acquires a separate lease, so one SQLite connection is
+not used concurrently by parent and child. Scoped blocks are no longer forced
+through `task.sync`, so a parked continuation may resume on another worker.
+The current direct-native implementation of `task.sleep` can still block its
+worker; making that path park cooperatively is a separate runtime improvement
+from task-local connection routing.
+
+The vendored SQLite build uses serialized `SQLITE_THREADSAFE=1`, and PoolCore
+enforces exclusive lease ownership and generation checks. Holding an SQL
+transaction open across unrelated network waits is still discouraged because
+it retains a connection and database locks, not because of native-thread
+affinity. Feature discovery reports `pool_affinity: :lease` and
+`pool_context: :task_local`.
+
+For in-memory tests, use `memory_pool`; plain `:memory:` creates one isolated
+database per connection and is therefore rejected for `max_size > 1`:
+
+```amber
+sqlite3.memory_pool(name: "request_tests", max_size: 4) |pool|:
+  # all pooled connections see the same named in-memory database
+  ...
+```
+
+### `amber-orm` / web-framework boundary
+
+`Pool` intentionally implements the same small executor surface as `Database`,
+so the existing adapter can consume it directly:
+
+```amber
+from orm.sqlite3 import adapter as sqlite_adapter
+
+User.bind!(sqlite_adapter(pool)).or_raise
+
+pool.transaction:
+  # User remains bound to pool; this operation resolves to the current tx.
+  User.create(email: "ada@example.test").or_raise
+```
+
+A future web framework only needs request middleware around
+`pool.with_connection |db|: ...`; models may stay bound to
+`sqlite_adapter(pool)`. Calls made by that logical request task reuse `db`, and
+explicit transactions automatically route the same adapter through their
+transaction connection. The yielded `db` / `tx` remains available for code
+that prefers an explicit executor.
 
 ## Deferred (not yet implemented)
 
 These parts of the design are intentionally left for follow-up work and are
 called out here for honesty:
 
-- **Connection `Pool` / `PoolLease`** (design §7). The cross-native-thread
-  affinity + cooperative-fiber pinning it specifies is a deep runtime
-  integration; `features()` reports `pool: false`.
 - **JSON/JSONB query-builder wrappers** `json()` / `jsonb()` and
   `to_json` / `to_jsonb` (design §9.4). The capability *probes* are implemented;
   the value wrappers are not.
-- **The strict `--require-full-native` zero-fallback gate** (design §3). The
-  package builds and runs correctly under `--target native`, but the rich Amber
-  layer (maps, string building, closures) currently lowers with some VM fallback,
-  so `native_graph_vm_fallback_code_count` is not yet 0. This tracks the native
-  backend's breadth, not the package.
 
 ## Toolchain requirements
 
 Building this package exercises language features that were fixed/added in the
-Amber toolchain alongside it (forward references between module functions,
-namespace-qualified calls `module.func()`, cross-module closure capture
-preservation, `self` as a first-class value, and the `macro.v1` string-tag macro
-profile). It requires an Amber toolchain that includes those fixes.
+Amber toolchain alongside it (logical `task.local` context, forward references
+between module functions, namespace-qualified calls `module.func()`,
+cross-module closure capture preservation, `self` as a first-class value, and
+the `macro.v1` string-tag macro profile). It requires an Amber toolchain that
+includes those fixes.
 
 ## Layout
 
@@ -161,9 +285,12 @@ amber.build.yaml        package manifest (module + native extension)
 src/sqlite3.am          the public API, in Amber
 native/sqlite3_ext.c    native leaves over the amber_ext ABI
 native/sqlite3.c/.h     vendored SQLite amalgamation (3.51.0, public domain)
-test/selftest.am        end-to-end conformance test (returns 34)
+test/selftest.am        end-to-end conformance test (returns 35)
 test/selftest.build.yaml  build manifest for the self-test
+test/pool_selftest.am   pool concurrency/lifecycle test (returns 16)
+test/orm_pool_selftest.am  amber-orm pool integration test (returns 4)
 examples/basic.am       a small usage example
+examples/pool.am        concurrent pool + scoped transaction example
 ```
 
 ## License

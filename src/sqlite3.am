@@ -1,22 +1,26 @@
 package sqlite3
 
+import task
+from sync import Mutex
+
 # sqlite3 — a native-only Amber package for SQLite databases.
 #
 # Architecture: the amber_ext ABI exposes only null/bool/int/float/str/bytes/
 # list + foreign handles, so the C leaves (native/sqlite3_ext.c) stay low-level
 # (SQL as Str, binds as a flat List, rows as Lists). Everything a user touches —
 # name-indifferent row Maps, named parameters, keyword arguments, transactions,
-# the convenience SQL builders, and the typed error surface — is built here in
-# Amber over two private native-handle classes, `Conn` and `Stmt`.
+# the convenience SQL builders, pooling policy, and the typed error surface —
+# is built here in Amber over small private native handles.
 
-export open, connect, memory
+export open, connect, memory, pool, memory_pool
 export version, source_id, libversion_number, compile_options, features
 export fragment, ident, quote_identifier
-export Database, Statement, SqlFragment, SqlIdent, SqlExecution
+export Database, Statement, Pool, PoolLease, SqlFragment, SqlIdent, SqlExecution
 export Error, OpenError, PrepareError, BindError, StepError, RangeError
 export ConstraintError, BusyError, LockedError, ReadOnlyError, InterruptError
 export CorruptError, MisuseError, TransactionError, JsonError
 export JsonUnavailableError, JsonbUnavailableError
+export PoolError, PoolClosedError, PoolTimeoutError, PoolLeaseError
 export macro sql
 
 class Error < NativeError
@@ -33,6 +37,10 @@ class InterruptError < StepError
 class CorruptError < StepError
 class MisuseError < Error
 class TransactionError < Error
+class PoolError < Error
+class PoolClosedError < PoolError
+class PoolTimeoutError < PoolError
+class PoolLeaseError < PoolError
 class JsonError < Error
 class JsonUnavailableError < JsonError
 class JsonbUnavailableError < JsonError
@@ -82,6 +90,39 @@ native class Stmt from "sqlite3.Stmt" owned:
   def _step!() from "amsq_stmt_step"
   def _rows() -> List from "amsq_stmt_rows"
 
+# Thread-safe shared state for a pool. It is collected because reclamation is
+# context-free and refcounted against outstanding lease handles.
+native class PoolCore from "sqlite3.PoolCore" collected:
+  def init(path_text as Str, flags as Int, busy_ms as Int, min_size as Int, max_size as Int, idle_timeout_ns as Int, max_lifetime_ns as Int) from "amsq_pool_core_new"
+  def destroy!() from "amsq_pool_core_free"
+  def _try_acquire() from "amsq_pool_try_acquire"
+  def _release(conn, discard as Bool) from "amsq_pool_release"
+  def _lease_released(conn) -> Bool from "amsq_pool_lease_released"
+  def _waiter(delta as Int) from "amsq_pool_waiter"
+  def _stats() -> List from "amsq_pool_stats"
+  def _prune() -> Int from "amsq_pool_prune"
+  def _disconnect() -> Int from "amsq_pool_disconnect"
+  def _close() from "amsq_pool_close"
+  def _closed?() -> Bool from "amsq_pool_closed"
+
+# A generation-checked view of a connection owned by PoolCore. Reclaiming a
+# forgotten manual lease safely rolls it back and returns it to the pool.
+native class LeaseConn from "sqlite3.LeaseConn" collected:
+  def destroy!() from "amsq_lease_conn_free"
+  def _close() from "amsq_conn_close"
+  def _closed?() -> Bool from "amsq_conn_closed"
+  def _filename(schema as Str) -> Str from "amsq_conn_filename"
+  def _readonly?(schema as Str) -> Bool from "amsq_conn_readonly"
+  def _in_transaction?() -> Bool from "amsq_conn_in_transaction"
+  def _changes() -> Int from "amsq_conn_changes"
+  def _total_changes() -> Int from "amsq_conn_total_changes"
+  def _last_insert_rowid() -> Int from "amsq_conn_last_insert_rowid"
+  def _interrupt() from "amsq_conn_interrupt"
+  def _busy_timeout(ms as Int) from "amsq_conn_busy_timeout"
+  def _exec(sql as Str) from "amsq_conn_exec"
+  def _prepare(sql as Str) from "amsq_conn_prepare"
+  def _probe(sql as Str) -> Bool from "amsq_conn_probe"
+
 # ---------------------------------------------------------- typed SQL values
 
 # A trusted raw SQL fragment plus its positional bind parameters.
@@ -106,6 +147,13 @@ class SqlExecution:
   attr params
 
   def init(@operation, @sql, @params)
+
+# Internal duck-protocol declaration for the optional instrumentation boundary.
+# It gives the native backend a stable user-method dispatch shape even when a
+# consumer executable installs no instrumenter of its own.
+class _QueryInstrumenterProtocol:
+  def instrument(execution, &execute):
+    execute()
 
 # ------------------------------------------------------------- module functions
 
@@ -185,10 +233,296 @@ def memory(name: null, shared: false, busy_timeout: null, pragmas: {}, &blk):
   ensure:
     db.close!()
 
+def pool(path as (Str | fs.Path), mode: :create, uri: false, min_size: 0, max_size: 5, checkout_timeout: 5.0, idle_timeout: 60.0, max_lifetime: null, busy_timeout: null, pragmas: {}, &blk):
+  _validate_pool_sizes(min_size, max_size)
+  flags = _open_flags(mode, uri)
+  path_text = _path_text(path)
+  if path_text == ":memory:" and max_size > 1:
+    raise ArgumentError("a multi-connection pool cannot use isolated :memory: databases; use sqlite3.memory_pool")
+  core = PoolCore(
+    path_text,
+    flags,
+    _busy_ms(busy_timeout),
+    min_size,
+    max_size,
+    _pool_duration_ns(idle_timeout, "idle_timeout", true),
+    _pool_duration_ns(max_lifetime, "max_lifetime", true)
+  )
+  p = Pool(core,
+    checkout_timeout_ns: _pool_duration_ns(checkout_timeout, "checkout_timeout", true),
+    pragmas: pragmas,
+    min_size: min_size)
+  try:
+    p._warm!()
+  rescue |e|:
+    p.close!()
+    raise e
+  return p unless blk
+  try:
+    blk(p)
+  ensure:
+    p.close!()
+
+# Multiple `:memory:` connections are separate SQLite databases. This helper
+# deliberately chooses a named shared-cache URI so a real pool sees one DB.
+def memory_pool(name: "amber_pool", min_size: 1, max_size: 5, checkout_timeout: 5.0, idle_timeout: 60.0, max_lifetime: null, busy_timeout: null, pragmas: {}, &blk):
+  name_text = _text_of(name)
+  raise ArgumentError("memory pool name must be a safe identifier") unless _valid_ident(name_text)
+  path = "file:" + name_text + "?mode=memory&cache=shared"
+  p = pool(path,
+    uri: true,
+    min_size: min_size,
+    max_size: max_size,
+    checkout_timeout: checkout_timeout,
+    idle_timeout: idle_timeout,
+    max_lifetime: max_lifetime,
+    busy_timeout: busy_timeout,
+    pragmas: pragmas)
+  return p unless blk
+  try:
+    blk(p)
+  ensure:
+    p.close!()
+
+# ---------------------------------------------------------------------- Pool
+
+class PoolLease:
+  def init(@core, @raw, @database)
+
+  def db():
+    raise Sqlite3.PoolLeaseError("the connection lease has been released") if released?()
+    @database
+
+  def _raw():
+    @raw
+
+  def release!():
+    @core._release(@raw, false)
+    null
+
+  def discard!():
+    @core._release(@raw, true)
+    null
+
+  def released?():
+    @core._lease_released(@raw)
+
+class Pool:
+  def init(@core, checkout_timeout_ns:, pragmas:, min_size:):
+    @checkout_timeout_ns = checkout_timeout_ns
+    @pragmas = pragmas
+    @min_size = min_size
+    # A scoped checkout belongs to the logical Amber task, not to a scheduler
+    # worker. Exclusive leases must never be inherited by task.spawn children.
+    @current_connection = task.local(inherit: false)
+    @state_mutex = Mutex.new()
+    @query_instrumenter = null
+
+  # lifecycle -----------------------------------------------------------
+  def close!():
+    @core._close()
+    null
+  def destroy!():
+    close!()
+  def closed?():
+    @core._closed?()
+
+  # instrumentation -----------------------------------------------------
+  def instrument_queries!(instrumenter):
+    @state_mutex.synchronize:
+      @query_instrumenter = instrumenter
+    self
+
+  def query_instrumenter():
+    @state_mutex.synchronize:
+      @query_instrumenter
+
+  # checkout ------------------------------------------------------------
+  def acquire(timeout: null):
+    timeout_ns = if timeout then _pool_duration_ns(timeout, "checkout timeout", false) else @checkout_timeout_ns
+    result = @core._try_acquire()
+    return _lease_from_result(result) if result
+    if timeout_ns == 0:
+      raise Sqlite3.PoolTimeoutError("timed out waiting for a database connection")
+
+    started = Time.monotonic
+    pause = 0.001
+    @core._waiter(1)
+    try:
+      while true:
+        if timeout_ns >= 0 and (Time.monotonic - started).total_nanoseconds >= timeout_ns:
+          raise Sqlite3.PoolTimeoutError("timed out waiting for a database connection")
+        task.sleep(pause)
+        if timeout_ns >= 0 and (Time.monotonic - started).total_nanoseconds >= timeout_ns:
+          raise Sqlite3.PoolTimeoutError("timed out waiting for a database connection")
+        result = @core._try_acquire()
+        return _lease_from_result(result) if result
+        if pause < 0.01:
+          pause = pause * 2.0
+        else:
+          pause = 0.01
+    ensure:
+      @core._waiter(-1)
+
+  def checkout(timeout: null, &blk):
+    raise ArgumentError("checkout requires a block; use acquire for a manual lease") unless blk
+    if @current_connection.bound?():
+      return blk(@current_connection.get())
+    lease = acquire(timeout: timeout)
+    db = lease.db()
+    try:
+      @current_connection.with(db):
+        blk(db)
+    ensure:
+      lease.release!()
+
+  def with_connection(timeout: null, &blk):
+    checkout(timeout: timeout) |db|:
+      blk(db)
+
+  # Pool is also a small connection-provider/executor. Adapters can bind to it
+  # once; calls inside checkout/transaction reuse this task's current lease.
+  def exec(sql):
+    _with_executor_connection() |db|: db.exec(sql)
+  def execute(sql, params: null):
+    _with_executor_connection() |db|: db.execute(sql, params: params)
+  def execute_many(sql, params):
+    _with_executor_connection() |db|: db.execute_many(sql, params)
+  def query(sql, params: null):
+    _with_executor_connection() |db|: db.query(sql, params: params)
+  def query_one(sql, params: null, default: null):
+    _with_executor_connection() |db|: db.query_one(sql, params: params, default: default)
+  def scalar(sql, params: null, default: null):
+    _with_executor_connection() |db|: db.scalar(sql, params: params, default: default)
+  def query_arrays(sql, params: null):
+    _with_executor_connection() |db|: db.query_arrays(sql, params: params)
+  def each(sql, params: null, &blk):
+    raise ArgumentError("each requires a block") unless blk
+    _with_executor_connection() |db|:
+      db.each(sql, params: params) |row|:
+        blk(row)
+  def each_array(sql, params: null, &blk):
+    raise ArgumentError("each_array requires a block") unless blk
+    _with_executor_connection() |db|:
+      db.each_array(sql, params: params) |row|:
+        blk(row)
+  def prepare(sql, &blk):
+    raise Sqlite3.PoolLeaseError("Pool#prepare requires a block so the statement cannot outlive its lease") unless blk
+    _with_executor_connection() |db|:
+      db.prepare(sql) |statement|:
+        blk(statement)
+
+  def transaction(mode: :deferred, &blk):
+    raise ArgumentError("transaction requires a block") unless blk
+    _with_executor_connection() |db|:
+      db.transaction(mode: mode) |tx|:
+        @current_connection.with(tx):
+          blk(tx)
+
+  # convenience query surface used by amber-orm -------------------------
+  def insert(table, columns:, values:, returning: null):
+    _with_executor_connection() |db|: db.insert(table, columns: columns, values: values, returning: returning)
+  def insert_or_ignore(table, columns:, values:, returning: null):
+    _with_executor_connection() |db|: db.insert_or_ignore(table, columns: columns, values: values, returning: returning)
+  def insert_or_replace(table, columns:, values:, returning: null):
+    _with_executor_connection() |db|: db.insert_or_replace(table, columns: columns, values: values, returning: returning)
+  def upsert(table, columns:, values:, returning: null):
+    _with_executor_connection() |db|: db.upsert(table, columns: columns, values: values, returning: returning)
+  def update(table, set:, where: null, where_not: null, returning: null):
+    _with_executor_connection() |db|: db.update(table, set: set, where: where, where_not: where_not, returning: returning)
+  def delete(table, where: null, where_not: null, returning: null):
+    _with_executor_connection() |db|: db.delete(table, where: where, where_not: where_not, returning: returning)
+  def select(table, columns: :all, where: null, where_not: null, group_by: null, having: null, order: null, limit: null, offset: null):
+    _with_executor_connection() |db|: db.select(table, columns: columns, where: where, where_not: where_not, group_by: group_by, having: having, order: order, limit: limit, offset: offset)
+  def get(table, columns: :all, where: null, where_not: null, group_by: null, having: null, order: null):
+    _with_executor_connection() |db|: db.get(table, columns: columns, where: where, where_not: where_not, group_by: group_by, having: having, order: order)
+
+  # maintenance / metadata ----------------------------------------------
+  def features():
+    _feature_map(null)
+  def json_available?():
+    _with_executor_connection() |db|: db.json_available?()
+  def jsonb_available?():
+    _with_executor_connection() |db|: db.jsonb_available?()
+  def jsonb_each_available?():
+    _with_executor_connection() |db|: db.jsonb_each_available?()
+  def jsonb_tree_available?():
+    _with_executor_connection() |db|: db.jsonb_tree_available?()
+  def readonly?(schema: :main):
+    _with_executor_connection() |db|: db.readonly?(schema: schema)
+  def filename(schema: :main):
+    _with_executor_connection() |db|: db.filename(schema: schema)
+
+  def stats():
+    values = @core._stats()
+    {
+      min_size: values[0],
+      max_size: values[1],
+      open: values[2],
+      idle: values[3],
+      leased: values[4],
+      waiting: values[5],
+      closed: values[6],
+      generation: values[7]
+    }
+
+  def prune!():
+    {closed: @core._prune()}
+
+  def disconnect!():
+    {closed: @core._disconnect()}
+
+  def drain!(timeout: null):
+    close!()
+    timeout_ns = _pool_duration_ns(timeout, "drain timeout", true)
+    started = Time.monotonic
+    while stats()[:leased] > 0:
+      if timeout_ns >= 0 and (Time.monotonic - started).total_nanoseconds >= timeout_ns:
+        raise Sqlite3.PoolTimeoutError("timed out draining leased database connections")
+      task.sleep(0.001)
+    null
+
+  def _with_executor_connection(&blk):
+    if @current_connection.bound?():
+      return blk(@current_connection.get())
+    checkout() |db|:
+      blk(db)
+
+  def _warm!():
+    return self if @min_size == 0
+    leases = []
+    try:
+      while leases.count < @min_size:
+        result = @core._try_acquire()
+        raise Sqlite3.PoolError("could not warm the configured minimum pool size") unless result
+        leases.push!(_lease_from_result(result))
+    ensure:
+      leases.each |lease|:
+        lease.release!()
+    self
+
+  def _lease_from_result(result):
+    raw = result[0]
+    lease = PoolLease(@core, raw, _database_for(raw))
+    if result[1]:
+      try:
+        lease.db()._apply_pragmas(@pragmas)
+      rescue |e|:
+        lease.discard!()
+        raise e
+    lease
+
+  def _database_for(raw):
+    db = Database(raw, pooled: true)
+    instrumenter = query_instrumenter()
+    db.instrument_queries!(instrumenter) if instrumenter
+    db
+
 # ------------------------------------------------------------------ Database
 
 class Database:
-  def init(@conn):
+  def init(@conn, pooled: false):
+    @pooled = pooled
     @savepoint_counter = 0
     @query_instrumenter = null
 
@@ -217,7 +551,10 @@ class Database:
     @conn._close()
     null
   def destroy!():
-    @conn.destroy!()
+    if @pooled:
+      @conn._close()
+    else:
+      @conn.destroy!()
     null
   def closed?():
     @conn._closed?
@@ -629,9 +966,10 @@ def _feature_map(db):
     savepoints: true,
     nested_transactions: :savepoint,
     ddl_transactions: true,
-    pool: false,
+    pool: true,
     pool_wait: :cooperative,
-    pool_affinity: :native_thread,
+    pool_affinity: :lease,
+    pool_context: :task_local,
     json: probes[:json],
     jsonb: probes[:jsonb],
     jsonb_each: probes[:jsonb_each],
@@ -682,6 +1020,26 @@ def _busy_ms(t):
 def _check_ms(ms):
   raise ArgumentError("busy_timeout must be non-negative") if ms < 0
   ms
+
+def _validate_pool_sizes(min_size, max_size):
+  raise ArgumentError("min_size must be a non-negative Int") unless Int === min_size and min_size >= 0
+  raise ArgumentError("max_size must be a positive Int") unless Int === max_size and max_size > 0
+  raise ArgumentError("min_size must not exceed max_size") if min_size > max_size
+  null
+
+def _pool_duration_ns(value, label, nullable):
+  if value == null:
+    return -1 if nullable
+    raise ArgumentError(label + " must not be null")
+  nanoseconds = case value:
+    when Int:
+      value * 1000000000
+    when Float:
+      (value * 1000000000.0).to_int
+    else:
+      value.total_nanoseconds
+  raise ArgumentError(label + " must be non-negative") if nanoseconds < 0
+  nanoseconds
 
 def _text_of(v):
   when Str:

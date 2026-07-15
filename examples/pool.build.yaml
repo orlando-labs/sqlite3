@@ -1,0 +1,30 @@
+schema: amber.build.v1
+name: sqlite3.pool_example
+root: sqlite3.pool_example
+
+profiles:
+  required: [core.v1, ffi.v1, macro.v1]
+  optional: []
+  forbidden: []
+
+modules:
+  - name: sqlite3
+    path: ../src/sqlite3.am
+  - name: sqlite3.pool_example
+    path: pool.am
+
+native_extensions:
+  - name: sqlite3
+    language: c
+    sources:
+      - ../native/sqlite3_ext.c
+      - ../native/sqlite3.c
+    headers:
+      - ../native/sqlite3.h
+    defines:
+      - SQLITE_THREADSAFE=1
+      - SQLITE_ENABLE_COLUMN_METADATA=1
+      - SQLITE_ENABLE_FTS5=1
+      - SQLITE_ENABLE_JSON1=1
+      - SQLITE_DQS=0
+      - SQLITE_OMIT_LOAD_EXTENSION=1
