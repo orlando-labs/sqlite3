@@ -12,6 +12,12 @@ modules:
     path: ../src/sqlite3.am
   - name: orm
     path: ../../amber-orm/src/orm.am
+  - name: orm.pool
+    path: ../../amber-orm/src/orm/pool.am
+  - name: orm.sqlite3.adapter
+    path: ../../amber-orm/src/orm/sqlite3/adapter.am
+  - name: orm.sqlite3.pool
+    path: ../../amber-orm/src/orm/sqlite3/pool.am
   - name: orm.sqlite3
     path: ../../amber-orm/src/orm/sqlite3.am
   - name: sqlite3.orm_pool_selftest
