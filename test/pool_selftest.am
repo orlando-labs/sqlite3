@@ -5,7 +5,7 @@ import task
 
 export main
 
-EXPECTED = 16
+EXPECTED = 18
 
 def check(score, condition):
   if condition then score + 1 else score
@@ -127,7 +127,7 @@ def main():
     score = check(score, statement_closed)
 
     # Manual leases are idempotent, and exhausting max_size observes a finite
-    # per-call timeout without blocking a scheduler worker.
+    # per-call timeout.
     one = pool.acquire()
     two = pool.acquire()
     three = pool.acquire()
@@ -137,7 +137,29 @@ def main():
     rescue Sqlite3.PoolTimeoutError |e|:
       timed_out = true
     score = check(score, timed_out and pool.stats()[:leased] == 3)
+
+    # A waiting checkout is resumed by the release notification rather than a
+    # millisecond polling timer. The buffered signal also covers release in the
+    # narrow interval between the failed acquisition and Channel#recv.
+    waiting = task.spawn:
+      notified = pool.acquire(timeout: 0.5)
+      notified.release!()
+      true
+    task.sleep(0.005)
     one.release!()
+    score = check(score, waiting.wait() and pool.stats()[:leased] == 2)
+
+    replacement = pool.acquire()
+    finite_wait_timed_out = false
+    started = Time.monotonic
+    try:
+      pool.acquire(timeout: 0.01)
+    rescue Sqlite3.PoolTimeoutError |e|:
+      finite_wait_timed_out = true
+    waited_ns = (Time.monotonic - started).total_nanoseconds
+    score = check(score, finite_wait_timed_out and waited_ns >= 5000000)
+
+    replacement.release!()
     one.release!()
     two.discard!()
     three.release!()

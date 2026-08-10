@@ -113,8 +113,9 @@ Connection pool (`Pool` / `PoolLease`):
   forms; lazy growth from `min_size:` to `max_size:`
 - scoped `checkout` / `with_connection` and manual `acquire`; finite default or
   per-call checkout timeouts with `PoolTimeoutError`
-- safe capture by `task.spawn`, bounded retry waiting through `task.sleep`, and
-  exclusive lease ownership of every physical SQLite connection
+- safe capture by `task.spawn`, notification-driven checkout waiting through a
+  buffered `Channel`, and exclusive lease ownership of every physical SQLite
+  connection
 - scoped `checkout` / `transaction` installs a non-inheritable logical
   task-local connection context that survives suspension and worker migration
 - nested Pool/ORM calls automatically reuse the current task's checkout or
@@ -287,7 +288,7 @@ native/sqlite3_ext.c    native leaves over the amber_ext ABI
 native/sqlite3.c/.h     vendored SQLite amalgamation (3.51.0, public domain)
 test/selftest.am        end-to-end conformance test (returns 35)
 test/selftest.build.yaml  build manifest for the self-test
-test/pool_selftest.am   pool concurrency/lifecycle test (returns 16)
+test/pool_selftest.am   pool concurrency/lifecycle test (returns 18)
 test/orm_pool_selftest.am  amber-orm pool integration test (returns 4)
 examples/basic.am       a small usage example
 examples/pool.am        concurrent pool + scoped transaction example

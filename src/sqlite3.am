@@ -1,7 +1,7 @@
 package sqlite3
 
 import task
-from sync import Mutex
+from sync import Channel, Mutex
 
 # sqlite3 — a native-only Amber package for SQLite databases.
 #
@@ -96,7 +96,9 @@ native class PoolCore from "sqlite3.PoolCore" collected:
   def init(path_text as Str, flags as Int, busy_ms as Int, min_size as Int, max_size as Int, idle_timeout_ns as Int, max_lifetime_ns as Int) from "amsq_pool_core_new"
   def destroy!() from "amsq_pool_core_free"
   def _try_acquire() from "amsq_pool_try_acquire"
-  def _release(conn, discard as Bool) from "amsq_pool_release"
+  # Returns -1 for an already-finished lease, otherwise the number of waiters
+  # observed after returning/discarding the connection.
+  def _release(conn, discard as Bool) -> Int from "amsq_pool_release"
   def _lease_released(conn) -> Bool from "amsq_pool_lease_released"
   def _waiter(delta as Int) from "amsq_pool_waiter"
   def _stats() -> List from "amsq_pool_stats"
@@ -251,7 +253,8 @@ def pool(path as (Str | fs.Path), mode: :create, uri: false, min_size: 0, max_si
   p = Pool(core,
     checkout_timeout_ns: _pool_duration_ns(checkout_timeout, "checkout_timeout", true),
     pragmas: pragmas,
-    min_size: min_size)
+    min_size: min_size,
+    max_size: max_size)
   try:
     p._warm!()
   rescue |e|:
@@ -287,7 +290,7 @@ def memory_pool(name: "amber_pool", min_size: 1, max_size: 5, checkout_timeout: 
 # ---------------------------------------------------------------------- Pool
 
 class PoolLease:
-  def init(@core, @raw, @database)
+  def init(@core, @raw, @database, @availability)
 
   def db():
     raise Sqlite3.PoolLeaseError("the connection lease has been released") if released?()
@@ -297,21 +300,33 @@ class PoolLease:
     @raw
 
   def release!():
-    @core._release(@raw, false)
+    _notify_available() if @core._release(@raw, false) > 0
     null
 
   def discard!():
-    @core._release(@raw, true)
+    _notify_available() if @core._release(@raw, true) > 0
     null
 
   def released?():
     @core._lease_released(@raw)
 
+  def _notify_available():
+    try:
+      # This is a wake-up hint rather than a permit. A buffered channel closes
+      # the release-before-wait race; acquire always rechecks PoolCore.
+      @availability.send(true, timeout: 0)
+    rescue TimeoutError |e|:
+      # Another release already buffered enough wake-ups for current waiters.
+      null
+    rescue ChannelClosedError |e|:
+      null
+
 class Pool:
-  def init(@core, checkout_timeout_ns:, pragmas:, min_size:):
+  def init(@core, checkout_timeout_ns:, pragmas:, min_size:, max_size:):
     @checkout_timeout_ns = checkout_timeout_ns
     @pragmas = pragmas
     @min_size = min_size
+    @availability = Channel.new(capacity: max_size)
     # A scoped checkout belongs to the logical Amber task, not to a scheduler
     # worker. Exclusive leases must never be inherited by task.spawn children.
     @current_connection = task.local(inherit: false)
@@ -321,6 +336,7 @@ class Pool:
   # lifecycle -----------------------------------------------------------
   def close!():
     @core._close()
+    @availability.close()
     null
   def destroy!():
     close!()
@@ -346,21 +362,37 @@ class Pool:
       raise Sqlite3.PoolTimeoutError("timed out waiting for a database connection")
 
     started = Time.monotonic
-    pause = 0.001
     @core._waiter(1)
     try:
+      # Close the registration race: a release that happened before _waiter(1)
+      # intentionally sent no signal, but its idle connection is visible here.
+      result = @core._try_acquire()
+      return _lease_from_result(result) if result
       while true:
-        if timeout_ns >= 0 and (Time.monotonic - started).total_nanoseconds >= timeout_ns:
-          raise Sqlite3.PoolTimeoutError("timed out waiting for a database connection")
-        task.sleep(pause)
-        if timeout_ns >= 0 and (Time.monotonic - started).total_nanoseconds >= timeout_ns:
-          raise Sqlite3.PoolTimeoutError("timed out waiting for a database connection")
+        wait_timed_out = false
+        wait_closed = false
+        try:
+          if timeout_ns < 0:
+            # A forgotten manual lease may be reclaimed by the native handle
+            # finalizer, which cannot publish into this Amber Channel. Keep an
+            # infrequent liveness sweep for that exceptional path only.
+            @availability.recv(timeout: 1.0)
+          else:
+            elapsed_ns = (Time.monotonic - started).total_nanoseconds
+            remaining_ns = timeout_ns - elapsed_ns
+            if remaining_ns <= 0:
+              raise Sqlite3.PoolTimeoutError("timed out waiting for a database connection")
+            @availability.recv(timeout: remaining_ns / 1000000000.0)
+        rescue TimeoutError |e|:
+          wait_timed_out = timeout_ns >= 0
+        rescue ChannelClosedError |e|:
+          wait_closed = true
+        # Retry before interpreting a timeout/close so a concurrent release
+        # cannot be lost merely because its signal raced the wake-up result.
         result = @core._try_acquire()
         return _lease_from_result(result) if result
-        if pause < 0.01:
-          pause = pause * 2.0
-        else:
-          pause = 0.01
+        raise Sqlite3.PoolClosedError("the database connection pool is closed") if wait_closed
+        raise Sqlite3.PoolTimeoutError("timed out waiting for a database connection") if wait_timed_out
     ensure:
       @core._waiter(-1)
 
@@ -503,7 +535,7 @@ class Pool:
 
   def _lease_from_result(result):
     raw = result[0]
-    lease = PoolLease(@core, raw, _database_for(raw))
+    lease = PoolLease(@core, raw, _database_for(raw), @availability)
     if result[1]:
       try:
         lease.db()._apply_pragmas(@pragmas)

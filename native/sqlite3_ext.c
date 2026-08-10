@@ -889,20 +889,23 @@ static int lease_cleanup_connection(Conn *conn) {
 
 /* Finish one lease. `discard` skips reuse; release still discards when cleanup,
  * lifetime, pool-close, or disconnect-generation checks say reuse is unsafe. */
-static void lease_finish(LeaseConn *lease, int discard) {
+static int lease_finish(LeaseConn *lease, int discard) {
   if (lease == NULL || lease->magic != AMSQ_LEASE_MAGIC) {
-    return;
+    return -1;
   }
   PoolCore *pool = lease->pool;
   if (pool == NULL) {
+    if (lease->released) {
+      return -1;
+    }
     lease->released = 1;
-    return;
+    return 0;
   }
 
   pool_lock(pool);
   if (lease->released) {
     pool_unlock(pool);
-    return;
+    return -1;
   }
   lease->released = 1;
   Conn *conn = lease->conn;
@@ -937,12 +940,14 @@ static void lease_finish(LeaseConn *lease, int discard) {
   }
   lease->conn = NULL;
   lease->pool = NULL;
+  int waiting_count = pool->waiting_count;
   pool_unlock(pool);
 
   if (close_connection && conn != NULL) {
     conn_box_free(conn);
   }
   pool_unref(pool);
+  return waiting_count;
 }
 
 /* PoolCore(path, flags, busy_ms, min_size, max_size, idle_ns, lifetime_ns). */
@@ -1117,8 +1122,8 @@ AmberStatus amsq_pool_release(AmberCtx *cx, AmberValue self,
     return amber_fault(cx, "Sqlite3.PoolLeaseError",
                        "lease belongs to a different connection pool");
   }
-  lease_finish(lease, discard);
-  *out = amber_make_null(cx);
+  int waiting_count = lease_finish(lease, discard);
+  *out = amber_make_int(cx, waiting_count);
   return AMBER_OK;
 }
 
