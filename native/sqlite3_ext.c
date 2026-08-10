@@ -23,6 +23,7 @@
 
 #include "sqlite3.h"
 
+#include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -70,6 +71,10 @@ typedef struct {
 struct PoolCore {
   uint32_t magic;
   sqlite3_mutex *mutex;
+  pthread_mutex_t wait_mutex;
+  pthread_cond_t wait_cond;
+  uint64_t wait_generation;
+  int wait_initialized;
   char *path;
   int flags;
   int busy_ms;
@@ -740,6 +745,41 @@ static void pool_unlock(PoolCore *pool) {
   }
 }
 
+static void pool_signal_waiters(PoolCore *pool, int broadcast) {
+  if (pool == NULL || !pool->wait_initialized) {
+    return;
+  }
+  pthread_mutex_lock(&pool->wait_mutex);
+  pool->wait_generation++;
+  if (broadcast) {
+    pthread_cond_broadcast(&pool->wait_cond);
+  } else {
+    pthread_cond_signal(&pool->wait_cond);
+  }
+  pthread_mutex_unlock(&pool->wait_mutex);
+}
+
+static void pool_waiter_change(PoolCore *pool, int delta) {
+  pool_lock(pool);
+  pool->waiting_count += delta;
+  if (pool->waiting_count < 0) {
+    pool->waiting_count = 0;
+  }
+  pool_unlock(pool);
+}
+
+static struct timespec realtime_after_ns(int64_t delay_ns) {
+  struct timespec deadline;
+  clock_gettime(CLOCK_REALTIME, &deadline);
+  deadline.tv_sec += (time_t)(delay_ns / 1000000000LL);
+  deadline.tv_nsec += (long)(delay_ns % 1000000000LL);
+  if (deadline.tv_nsec >= 1000000000L) {
+    deadline.tv_sec++;
+    deadline.tv_nsec -= 1000000000L;
+  }
+  return deadline;
+}
+
 static PoolCore *pool_of(AmberCtx *cx, AmberValue self) {
   void *raw = NULL;
   if (!amber_handle_ptr(cx, self, kPoolCoreTag, &raw)) {
@@ -841,6 +881,7 @@ static int pool_close_internal(PoolCore *pool) {
   pool->generation++;
   int closed = pool_close_idle_locked(pool);
   pool_unlock(pool);
+  pool_signal_waiters(pool, 1);
   return closed;
 }
 
@@ -863,6 +904,11 @@ static void pool_unref(PoolCore *pool) {
   if (pool->mutex != NULL) {
     sqlite3_mutex_free(pool->mutex);
     pool->mutex = NULL;
+  }
+  if (pool->wait_initialized) {
+    pthread_cond_destroy(&pool->wait_cond);
+    pthread_mutex_destroy(&pool->wait_mutex);
+    pool->wait_initialized = 0;
   }
   pool->magic = 0;
   free(pool->path);
@@ -943,6 +989,10 @@ static int lease_finish(LeaseConn *lease, int discard) {
   int waiting_count = pool->waiting_count;
   pool_unlock(pool);
 
+  if (waiting_count > 0) {
+    pool_signal_waiters(pool, 0);
+  }
+
   if (close_connection && conn != NULL) {
     conn_box_free(conn);
   }
@@ -990,6 +1040,22 @@ AmberStatus amsq_pool_core_new(AmberCtx *cx, const AmberValue *args,
     return amber_fault(cx, "Sqlite3.PoolError",
                        "SQLite mutex support is unavailable");
   }
+  if (pthread_mutex_init(&pool->wait_mutex, NULL) != 0) {
+    sqlite3_mutex_free(pool->mutex);
+    free(pool->path);
+    free(pool);
+    return amber_fault(cx, "Sqlite3.PoolError",
+                       "could not initialize pool wait mutex");
+  }
+  if (pthread_cond_init(&pool->wait_cond, NULL) != 0) {
+    pthread_mutex_destroy(&pool->wait_mutex);
+    sqlite3_mutex_free(pool->mutex);
+    free(pool->path);
+    free(pool);
+    return amber_fault(cx, "Sqlite3.PoolError",
+                       "could not initialize pool wait condition");
+  }
+  pool->wait_initialized = 1;
   pool->magic = AMSQ_POOL_MAGIC;
   pool->flags = (int)flags;
   pool->busy_ms = (int)busy_ms;
@@ -1100,6 +1166,70 @@ AmberStatus amsq_pool_try_acquire(AmberCtx *cx, AmberValue self,
   fields[1] = amber_make_bool(cx, fresh);
   *out = amber_make_list(cx, fields, 2);
   return AMBER_OK;
+}
+
+/* Blocking half of pool checkout. Amber first calls try_acquire so the common
+ * uncontended path never enters the executor. Once capacity is exhausted this
+ * thunk waits on the native pool condition; its logical symbol is declared in
+ * `blocking_symbols`, so a VM strand is parked and no RuntimeWorld bridge lock
+ * is retained while the OS thread sleeps. */
+AmberStatus amsq_pool_acquire_wait(AmberCtx *cx, AmberValue self,
+                                   const AmberValue *args, size_t argc,
+                                   AmberValue *out) {
+  PoolCore *pool = pool_of(cx, self);
+  int64_t timeout_ns = -1;
+  if (pool == NULL) {
+    return AMBER_ERR;
+  }
+  if (!arg_int(cx, args, argc, 0, &timeout_ns) || timeout_ns < -1) {
+    return amber_fault(cx, "TypeError",
+                       "pool acquire wait expects timeout nanoseconds or -1");
+  }
+
+  const int64_t started = monotonic_ns();
+  pool_waiter_change(pool, 1);
+  while (1) {
+    if (amber_task_cancelled(cx)) {
+      pool_waiter_change(pool, -1);
+      return amber_fault(cx, "CancelledError", "task cancelled");
+    }
+
+    pthread_mutex_lock(&pool->wait_mutex);
+    const uint64_t observed_generation = pool->wait_generation;
+    pthread_mutex_unlock(&pool->wait_mutex);
+
+    AmberStatus status = amsq_pool_try_acquire(cx, self, NULL, 0, out);
+    if (status != AMBER_OK) {
+      pool_waiter_change(pool, -1);
+      return status;
+    }
+    if (!amber_is_null(cx, *out)) {
+      pool_waiter_change(pool, -1);
+      return AMBER_OK;
+    }
+
+    int64_t wait_ns = 100000000LL; /* cancellation polling bound: 100 ms */
+    if (timeout_ns >= 0) {
+      const int64_t elapsed = monotonic_ns() - started;
+      const int64_t remaining = timeout_ns - elapsed;
+      if (remaining <= 0) {
+        pool_waiter_change(pool, -1);
+        return amber_fault(cx, "Sqlite3.PoolTimeoutError",
+                           "timed out waiting for a database connection");
+      }
+      if (remaining < wait_ns) {
+        wait_ns = remaining;
+      }
+    }
+
+    pthread_mutex_lock(&pool->wait_mutex);
+    if (pool->wait_generation == observed_generation) {
+      const struct timespec deadline = realtime_after_ns(wait_ns);
+      (void)pthread_cond_timedwait(&pool->wait_cond, &pool->wait_mutex,
+                                   &deadline);
+    }
+    pthread_mutex_unlock(&pool->wait_mutex);
+  }
 }
 
 AmberStatus amsq_pool_release(AmberCtx *cx, AmberValue self,

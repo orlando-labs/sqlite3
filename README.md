@@ -82,7 +82,11 @@ amberc build your.build.yaml --target native --require-full-native \
 ```
 
 The core, pool, concurrent example, and `amber-orm` integration graphs all pass
-the strict full-native gate with zero fallback code objects.
+the strict full-native gate with zero fallback code objects. Pool contention is
+declared as blocking FFI: the common checkout stays on the nonblocking fast
+path, while an exhausted pool waits on a native condition through Amber's
+blocking executor. VM strands park during that wait, and fully-native calls do
+not retain the serialized runtime bridge lock.
 
 Capabilities: the package requires the `ffi.v1` profile feature (it links C).
 Opening a database additionally uses `db`/`fs` host grants at runtime (design §11).

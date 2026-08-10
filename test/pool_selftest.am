@@ -138,9 +138,9 @@ def main():
       timed_out = true
     score = check(score, timed_out and pool.stats()[:leased] == 3)
 
-    # A waiting checkout is resumed by the release notification rather than a
-    # millisecond polling timer. The buffered signal also covers release in the
-    # narrow interval between the failed acquisition and Channel#recv.
+    # A waiting checkout runs on the blocking FFI executor, leaving scheduler
+    # workers free. The native condition generation also covers release in the
+    # narrow interval between failed acquisition and condition wait.
     waiting = task.spawn:
       notified = pool.acquire(timeout: 0.5)
       notified.release!()
