@@ -1,9 +1,9 @@
-# sqlite3 — SQLite for Amber
+# sqlite3 — SQLite for Sputnik
 
-A native-only Amber package for working with SQLite databases, implementing the
+A native-only Sputnik package for working with SQLite databases, implementing the
 public API from `DESIGN-package-sqlite3-api-2026-07-02.md`.
 
-```amber
+```sputnik
 import sqlite3
 from sqlite3 import sql
 
@@ -33,7 +33,7 @@ sqlite3.open("data/app.db", busy_timeout: 2.seconds) |db|:
 
 For concurrent applications, use a pool directly as the database executor:
 
-```amber
+```sputnik
 import task
 import sqlite3
 
@@ -47,17 +47,17 @@ sqlite3.pool("data/app.db", min_size: 1, max_size: 10) |pool|:
 
 ## Architecture
 
-The `amber_ext` ABI exposes only `null`/`Bool`/`Int`/`Float`/`Str`/`Bytes`/`List`
+The `sputnik_ext` ABI exposes only `null`/`Bool`/`Int`/`Float`/`Str`/`Bytes`/`List`
 plus opaque foreign handles — no maps, no symbols, no keyword arguments. So the C
 side ([`native/sqlite3_ext.c`](native/sqlite3_ext.c)) is a thin set of low-level
 *leaves*: SQL arrives as a `Str`, bind values as a flat `List` of scalars, and
 rows leave as a `List` of column-value `List`s. Everything a user touches —
 name-indifferent row `Map`s, named parameters, keyword arguments, transactions,
-the convenience SQL builders, and the typed error hierarchy — is built in Amber
-([`src/sqlite3.am`](src/sqlite3.am)) over private native-handle classes for
+the convenience SQL builders, and the typed error hierarchy — is built in Sputnik
+([`src/sqlite3.s`](src/sqlite3.s)) over private native-handle classes for
 connections, statements, shared pool state, and generation-checked leases.
 
-This mirrors the design's first anchor: *the Amber source is the public API; C is
+This mirrors the design's first anchor: *the Sputnik source is the public API; C is
 only the implementation of native-only leaves.*
 
 SQLite itself is vendored as the official amalgamation
@@ -76,15 +76,15 @@ A consumer manifest lists this package's module + native extension. See
 Build and run:
 
 ```sh
-amberc build your.build.yaml --target native --require-full-native \
+sputnik build your.build.yaml --target native --require-full-native \
   --out-dir out --cache-dir cache
 ./out/your.root.module
 ```
 
-The core, pool, concurrent example, and `amber-orm` integration graphs all pass
+The core, pool, concurrent example, and `sputnik-orm` integration graphs all pass
 the strict full-native gate with zero fallback code objects. Pool contention is
 declared as blocking FFI: the common checkout stays on the nonblocking fast
-path, while an exhausted pool waits on a native condition through Amber's
+path, while an exhausted pool waits on a native condition through Sputnik's
 blocking executor. VM strands park during that wait, and fully-native calls do
 not retain the serialized runtime bridge lock.
 
@@ -170,17 +170,17 @@ Safety: `ATTACH` / `DETACH` / `VACUUM INTO` are rejected by the native layer
 (design §11, §15); direct-execution helpers reject trailing SQL after the first
 statement; `exec` is the trusted multi-statement path.
 
-The core self-test ([`test/selftest.am`](test/selftest.am)) exercises 35
-end-to-end behaviours. [`test/pool_selftest.am`](test/pool_selftest.am) adds
+The core self-test ([`test/selftest.s`](test/selftest.s)) exercises 35
+end-to-end behaviours. [`test/pool_selftest.s`](test/pool_selftest.s) adds
 concurrent tasks, timeout, scoped leases, cleanup, and maintenance checks;
-[`test/orm_pool_selftest.am`](test/orm_pool_selftest.am) verifies direct
-`amber-orm` integration and task-local transactional routing.
+[`test/orm_pool_selftest.s`](test/orm_pool_selftest.s) verifies direct
+`sputnik-orm` integration and task-local transactional routing.
 
 ## Pool API and concurrency model
 
 The scoped form is the default:
 
-```amber
+```sputnik
 sqlite3.pool("data/app.db",
   min_size: 1,
   max_size: 10,
@@ -207,7 +207,7 @@ recreated lazily on demand.
 Manual leases are available for framework internals, but should stay within the
 task that acquired them:
 
-```amber
+```sputnik
 lease = pool.acquire(timeout: 0.5)
 try:
   lease.db().scalar("select 1")
@@ -237,18 +237,18 @@ affinity. Feature discovery reports `pool_affinity: :lease` and
 For in-memory tests, use `memory_pool`; plain `:memory:` creates one isolated
 database per connection and is therefore rejected for `max_size > 1`:
 
-```amber
+```sputnik
 sqlite3.memory_pool(name: "request_tests", max_size: 4) |pool|:
   # all pooled connections see the same named in-memory database
   ...
 ```
 
-### `amber-orm` / web-framework boundary
+### `sputnik-orm` / web-framework boundary
 
 `Pool` intentionally implements the same small executor surface as `Database`,
 so the existing adapter can consume it directly:
 
-```amber
+```sputnik
 from orm.sqlite3 import adapter as sqlite_adapter
 
 User.bind!(sqlite_adapter(pool)).or_raise
@@ -277,25 +277,25 @@ called out here for honesty:
 ## Toolchain requirements
 
 Building this package exercises language features that were fixed/added in the
-Amber toolchain alongside it (logical `task.local` context, forward references
+Sputnik toolchain alongside it (logical `task.local` context, forward references
 between module functions, namespace-qualified calls `module.func()`,
 cross-module closure capture preservation, `self` as a first-class value, and
-the `macro.v1` string-tag macro profile). It requires an Amber toolchain that
+the `macro.v1` string-tag macro profile). It requires an Sputnik toolchain that
 includes those fixes.
 
 ## Layout
 
 ```
-amber.build.yaml        package manifest (module + native extension)
-src/sqlite3.am          the public API, in Amber
-native/sqlite3_ext.c    native leaves over the amber_ext ABI
+sputnik.build.yaml        package manifest (module + native extension)
+src/sqlite3.s          the public API, in Sputnik
+native/sqlite3_ext.c    native leaves over the sputnik_ext ABI
 native/sqlite3.c/.h     vendored SQLite amalgamation (3.51.0, public domain)
-test/selftest.am        end-to-end conformance test (returns 35)
+test/selftest.s        end-to-end conformance test (returns 35)
 test/selftest.build.yaml  build manifest for the self-test
-test/pool_selftest.am   pool concurrency/lifecycle test (returns 18)
-test/orm_pool_selftest.am  amber-orm pool integration test (returns 4)
-examples/basic.am       a small usage example
-examples/pool.am        concurrent pool + scoped transaction example
+test/pool_selftest.s   pool concurrency/lifecycle test (returns 18)
+test/orm_pool_selftest.s  sputnik-orm pool integration test (returns 4)
+examples/basic.s       a small usage example
+examples/pool.s        concurrent pool + scoped transaction example
 ```
 
 ## License

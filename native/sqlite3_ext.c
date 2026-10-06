@@ -1,25 +1,25 @@
 /*
- * sqlite3_ext.c — native leaves for the Amber `sqlite3` package.
+ * sqlite3_ext.c — native leaves for the Sputnik `sqlite3` package.
  *
- * These thunks are the *only* C in the package. They speak the amber_ext ABI
- * (runtime/amber_ext.h), which exposes just null/bool/int/float/str/bytes/list
+ * These thunks are the *only* C in the package. They speak the sputnik_ext ABI
+ * (runtime/sputnik_ext.h), which exposes just null/bool/int/float/str/bytes/list
  * plus foreign handles — no maps, no symbols, no keyword args. So the leaves
  * stay deliberately low-level: SQL arrives as a Str, bind values arrive as a
  * flat List of scalars, and rows leave as a List of column-value Lists. All the
  * map/symbol/keyword shaping, the convenience SQL builders, and transactions
- * live in Amber (src/sqlite3.am), per the design's anchor #1 ("The Amber source
+ * live in Sputnik (src/sqlite3.s), per the design's anchor #1 ("The Sputnik source
  * is the public API. C is only the implementation of native-only leaves.").
  *
  * Every thunk uses an `amsq_` prefix so no name can collide with a real
  * `sqlite3_*` symbol from the amalgamation.
  *
- * Four foreign-handle types are declared in src/sqlite3.am:
+ * Four foreign-handle types are declared in src/sqlite3.s:
  *   sqlite3.Conn      -> struct Conn      (standalone sqlite3*) owned
  *   sqlite3.Stmt      -> struct Stmt      (sqlite3_stmt*)       owned
  *   sqlite3.PoolCore  -> struct PoolCore  (shared pool state)   collected
  *   sqlite3.LeaseConn -> struct LeaseConn (checked pool view)   collected
  */
-#include "runtime/amber_ext.h"
+#include "runtime/sputnik_ext.h"
 
 #include "sqlite3.h"
 
@@ -126,7 +126,7 @@ static const char *error_class_for_rc(int rc) {
 
 /* Record a fault for `rc`, preferring the specific class, else the phase parent
  * ("Sqlite3.OpenError" / ".PrepareError" / ".BindError" / ".StepError"). */
-static AmberStatus fault_for_rc(AmberCtx *cx, sqlite3 *db, int rc,
+static SputnikStatus fault_for_rc(SputnikCtx *cx, sqlite3 *db, int rc,
                                 const char *phase_class) {
   const char *cls = error_class_for_rc(rc);
   if (cls == NULL) {
@@ -139,34 +139,34 @@ static AmberStatus fault_for_rc(AmberCtx *cx, sqlite3 *db, int rc,
   if (msg == NULL || msg[0] == '\0') {
     msg = sqlite3_errstr(rc);
   }
-  return amber_fault(cx, cls, msg != NULL ? msg : "sqlite3 error");
+  return sputnik_fault(cx, cls, msg != NULL ? msg : "sqlite3 error");
 }
 
 /* ------------------------------------------------------------ arg utilities */
 
-static int arg_int(AmberCtx *cx, const AmberValue *args, size_t argc, size_t i,
+static int arg_int(SputnikCtx *cx, const SputnikValue *args, size_t argc, size_t i,
                    int64_t *out) {
   if (i >= argc) {
     return 0;
   }
-  return amber_as_int(cx, args[i], out);
+  return sputnik_as_int(cx, args[i], out);
 }
 
 /* Borrow the UTF-8 text of a Str argument. Returns 0 (no fault) if not a Str. */
-static int arg_str(AmberCtx *cx, const AmberValue *args, size_t argc, size_t i,
+static int arg_str(SputnikCtx *cx, const SputnikValue *args, size_t argc, size_t i,
                    const char **ptr, size_t *len) {
   if (i >= argc) {
     return 0;
   }
-  return amber_str_view(cx, args[i], ptr, len);
+  return sputnik_str_view(cx, args[i], ptr, len);
 }
 
-static int arg_bool(AmberCtx *cx, const AmberValue *args, size_t argc, size_t i,
+static int arg_bool(SputnikCtx *cx, const SputnikValue *args, size_t argc, size_t i,
                     int *out) {
   if (i >= argc) {
     return 0;
   }
-  return amber_as_bool(cx, args[i], out);
+  return sputnik_as_bool(cx, args[i], out);
 }
 
 static int64_t monotonic_ns(void) {
@@ -262,52 +262,52 @@ static void conn_box_free(Conn *conn) {
 
 /* ---------------------------------------------------------- library globals */
 
-AmberStatus amsq_libversion(AmberCtx *cx, const AmberValue *args, size_t argc,
-                            AmberValue *out) {
+SputnikStatus amsq_libversion(SputnikCtx *cx, const SputnikValue *args, size_t argc,
+                            SputnikValue *out) {
   (void)args;
   (void)argc;
   const char *v = sqlite3_libversion();
-  *out = amber_make_str(cx, v, strlen(v));
-  return AMBER_OK;
+  *out = sputnik_make_str(cx, v, strlen(v));
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_sourceid(AmberCtx *cx, const AmberValue *args, size_t argc,
-                          AmberValue *out) {
+SputnikStatus amsq_sourceid(SputnikCtx *cx, const SputnikValue *args, size_t argc,
+                          SputnikValue *out) {
   (void)args;
   (void)argc;
   const char *v = sqlite3_sourceid();
-  *out = amber_make_str(cx, v, strlen(v));
-  return AMBER_OK;
+  *out = sputnik_make_str(cx, v, strlen(v));
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_libversion_number(AmberCtx *cx, const AmberValue *args,
-                                   size_t argc, AmberValue *out) {
+SputnikStatus amsq_libversion_number(SputnikCtx *cx, const SputnikValue *args,
+                                   size_t argc, SputnikValue *out) {
   (void)args;
   (void)argc;
-  *out = amber_make_int(cx, sqlite3_libversion_number());
-  return AMBER_OK;
+  *out = sputnik_make_int(cx, sqlite3_libversion_number());
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_compile_options(AmberCtx *cx, const AmberValue *args,
-                                 size_t argc, AmberValue *out) {
+SputnikStatus amsq_compile_options(SputnikCtx *cx, const SputnikValue *args,
+                                 size_t argc, SputnikValue *out) {
   (void)args;
   (void)argc;
-  AmberValue items[512];
+  SputnikValue items[512];
   size_t n = 0;
   const char *opt = NULL;
   int i = 0;
   while (n < 512 && (opt = sqlite3_compileoption_get(i++)) != NULL) {
-    items[n++] = amber_make_str(cx, opt, strlen(opt));
+    items[n++] = sputnik_make_str(cx, opt, strlen(opt));
   }
-  *out = amber_make_list(cx, items, n);
-  return AMBER_OK;
+  *out = sputnik_make_list(cx, items, n);
+  return SPUTNIK_OK;
 }
 
 /* -------------------------------------------------------------- connection */
 
 /* init(path, flags, busy_ms) -> Conn. busy_ms < 0 leaves the default. */
-AmberStatus amsq_conn_open(AmberCtx *cx, const AmberValue *args, size_t argc,
-                           AmberValue *out) {
+SputnikStatus amsq_conn_open(SputnikCtx *cx, const SputnikValue *args, size_t argc,
+                           SputnikValue *out) {
   const char *path = NULL;
   size_t path_len = 0;
   int64_t flags = 0;
@@ -315,12 +315,12 @@ AmberStatus amsq_conn_open(AmberCtx *cx, const AmberValue *args, size_t argc,
   if (!arg_str(cx, args, argc, 0, &path, &path_len) ||
       !arg_int(cx, args, argc, 1, &flags) ||
       !arg_int(cx, args, argc, 2, &busy_ms)) {
-    return amber_fault(cx, "TypeError",
+    return sputnik_fault(cx, "TypeError",
                        "conn_open expects (Str path, Int flags, Int busy_ms)");
   }
   char *path_z = (char *)malloc(path_len + 1);
   if (path_z == NULL) {
-    return amber_fault(cx, "Sqlite3.OpenError", "out of memory");
+    return sputnik_fault(cx, "Sqlite3.OpenError", "out of memory");
   }
   memcpy(path_z, path, path_len);
   path_z[path_len] = '\0';
@@ -329,7 +329,7 @@ AmberStatus amsq_conn_open(AmberCtx *cx, const AmberValue *args, size_t argc,
   int rc = sqlite3_open_v2(path_z, &db, (int)flags, NULL);
   free(path_z);
   if (rc != SQLITE_OK) {
-    AmberStatus st = fault_for_rc(cx, db, rc, "Sqlite3.OpenError");
+    SputnikStatus st = fault_for_rc(cx, db, rc, "Sqlite3.OpenError");
     sqlite3_close_v2(db);
     return st;
   }
@@ -340,19 +340,19 @@ AmberStatus amsq_conn_open(AmberCtx *cx, const AmberValue *args, size_t argc,
   Conn *conn = conn_box_new(db);
   if (conn == NULL) {
     sqlite3_close_v2(db);
-    return amber_fault(cx, "Sqlite3.OpenError", "out of memory");
+    return sputnik_fault(cx, "Sqlite3.OpenError", "out of memory");
   }
-  *out = amber_make_handle(cx, kConnTag, conn);
-  return AMBER_OK;
+  *out = sputnik_make_handle(cx, kConnTag, conn);
+  return SPUTNIK_OK;
 }
 
-static Conn *conn_of(AmberCtx *cx, AmberValue self) {
+static Conn *conn_of(SputnikCtx *cx, SputnikValue self) {
   void *p = NULL;
-  if (!amber_handle_ptr(cx, self, NULL, &p)) {
+  if (!sputnik_handle_ptr(cx, self, NULL, &p)) {
     return NULL;
   }
   if (p == NULL) {
-    amber_fault(cx, "TypeError", "database handle is null");
+    sputnik_fault(cx, "TypeError", "database handle is null");
     return NULL;
   }
   uint32_t magic = *((uint32_t *)p);
@@ -362,70 +362,70 @@ static Conn *conn_of(AmberCtx *cx, AmberValue self) {
   if (magic == AMSQ_LEASE_MAGIC) {
     LeaseConn *lease = (LeaseConn *)p;
     if (lease->released || lease->conn == NULL || lease->pool == NULL) {
-      amber_fault(cx, "Sqlite3.PoolLeaseError",
+      sputnik_fault(cx, "Sqlite3.PoolLeaseError",
                   "the pooled connection lease has been released");
       return NULL;
     }
     if (!lease->conn->leased ||
         lease->conn->generation != lease->connection_generation) {
-      amber_fault(cx, "Sqlite3.PoolLeaseError",
+      sputnik_fault(cx, "Sqlite3.PoolLeaseError",
                   "the pooled connection no longer belongs to this lease");
       return NULL;
     }
     return lease->conn;
   }
-  amber_fault(cx, "TypeError", "expected a sqlite3 connection handle");
+  sputnik_fault(cx, "TypeError", "expected a sqlite3 connection handle");
   return NULL;
 }
 
-AmberStatus amsq_conn_close(AmberCtx *cx, AmberValue self,
-                            const AmberValue *args, size_t argc,
-                            AmberValue *out) {
+SputnikStatus amsq_conn_close(SputnikCtx *cx, SputnikValue self,
+                            const SputnikValue *args, size_t argc,
+                            SputnikValue *out) {
   (void)args;
   (void)argc;
   Conn *conn = conn_of(cx, self);
   if (conn == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   conn_close_db(conn);
-  *out = amber_make_null(cx);
-  return AMBER_OK;
+  *out = sputnik_make_null(cx);
+  return SPUTNIK_OK;
 }
 
 /* owned destructor: (cx, handle) — behaves like close!, then frees the box. */
-void amsq_conn_free(AmberCtx *cx, void *handle) {
+void amsq_conn_free(SputnikCtx *cx, void *handle) {
   (void)cx;
   conn_box_free((Conn *)handle);
 }
 
-AmberStatus amsq_conn_closed(AmberCtx *cx, AmberValue self,
-                             const AmberValue *args, size_t argc,
-                             AmberValue *out) {
+SputnikStatus amsq_conn_closed(SputnikCtx *cx, SputnikValue self,
+                             const SputnikValue *args, size_t argc,
+                             SputnikValue *out) {
   (void)args;
   (void)argc;
   Conn *conn = conn_of(cx, self);
   if (conn == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
-  *out = amber_make_bool(cx, conn->db == NULL);
-  return AMBER_OK;
+  *out = sputnik_make_bool(cx, conn->db == NULL);
+  return SPUTNIK_OK;
 }
 
 /* Guard: refuse a NULL (closed) db with a rescuable LifetimeError. */
-static sqlite3 *live_db(AmberCtx *cx, AmberValue self) {
+static sqlite3 *live_db(SputnikCtx *cx, SputnikValue self) {
   Conn *conn = conn_of(cx, self);
   if (conn == NULL) {
     return NULL;
   }
   if (conn->db == NULL) {
-    amber_fault(cx, "LifetimeError", "database is closed");
+    sputnik_fault(cx, "LifetimeError", "database is closed");
     return NULL;
   }
   return conn->db;
 }
 
 /* Copy a Str-or-default schema argument into a small NUL-terminated buffer. */
-static void schema_arg(AmberCtx *cx, const AmberValue *args, size_t argc,
+static void schema_arg(SputnikCtx *cx, const SputnikValue *args, size_t argc,
                        char *buf, size_t bufsz) {
   const char *schema = "main";
   size_t schema_len = 4;
@@ -442,12 +442,12 @@ static void schema_arg(AmberCtx *cx, const AmberValue *args, size_t argc,
   buf[schema_len] = '\0';
 }
 
-AmberStatus amsq_conn_filename(AmberCtx *cx, AmberValue self,
-                               const AmberValue *args, size_t argc,
-                               AmberValue *out) {
+SputnikStatus amsq_conn_filename(SputnikCtx *cx, SputnikValue self,
+                               const SputnikValue *args, size_t argc,
+                               SputnikValue *out) {
   sqlite3 *db = live_db(cx, self);
   if (db == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   char sbuf[128];
   schema_arg(cx, args, argc, sbuf, sizeof(sbuf));
@@ -455,104 +455,104 @@ AmberStatus amsq_conn_filename(AmberCtx *cx, AmberValue self,
   if (name == NULL) {
     name = "";
   }
-  *out = amber_make_str(cx, name, strlen(name));
-  return AMBER_OK;
+  *out = sputnik_make_str(cx, name, strlen(name));
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_conn_readonly(AmberCtx *cx, AmberValue self,
-                               const AmberValue *args, size_t argc,
-                               AmberValue *out) {
+SputnikStatus amsq_conn_readonly(SputnikCtx *cx, SputnikValue self,
+                               const SputnikValue *args, size_t argc,
+                               SputnikValue *out) {
   sqlite3 *db = live_db(cx, self);
   if (db == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   char sbuf[128];
   schema_arg(cx, args, argc, sbuf, sizeof(sbuf));
   int ro = sqlite3_db_readonly(db, sbuf);
-  *out = amber_make_bool(cx, ro == 1);
-  return AMBER_OK;
+  *out = sputnik_make_bool(cx, ro == 1);
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_conn_in_transaction(AmberCtx *cx, AmberValue self,
-                                     const AmberValue *args, size_t argc,
-                                     AmberValue *out) {
+SputnikStatus amsq_conn_in_transaction(SputnikCtx *cx, SputnikValue self,
+                                     const SputnikValue *args, size_t argc,
+                                     SputnikValue *out) {
   (void)args;
   (void)argc;
   sqlite3 *db = live_db(cx, self);
   if (db == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
-  *out = amber_make_bool(cx, sqlite3_get_autocommit(db) == 0);
-  return AMBER_OK;
+  *out = sputnik_make_bool(cx, sqlite3_get_autocommit(db) == 0);
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_conn_changes(AmberCtx *cx, AmberValue self,
-                              const AmberValue *args, size_t argc,
-                              AmberValue *out) {
+SputnikStatus amsq_conn_changes(SputnikCtx *cx, SputnikValue self,
+                              const SputnikValue *args, size_t argc,
+                              SputnikValue *out) {
   (void)args;
   (void)argc;
   sqlite3 *db = live_db(cx, self);
   if (db == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
-  *out = amber_make_int(cx, sqlite3_changes64(db));
-  return AMBER_OK;
+  *out = sputnik_make_int(cx, sqlite3_changes64(db));
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_conn_total_changes(AmberCtx *cx, AmberValue self,
-                                    const AmberValue *args, size_t argc,
-                                    AmberValue *out) {
+SputnikStatus amsq_conn_total_changes(SputnikCtx *cx, SputnikValue self,
+                                    const SputnikValue *args, size_t argc,
+                                    SputnikValue *out) {
   (void)args;
   (void)argc;
   sqlite3 *db = live_db(cx, self);
   if (db == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
-  *out = amber_make_int(cx, sqlite3_total_changes64(db));
-  return AMBER_OK;
+  *out = sputnik_make_int(cx, sqlite3_total_changes64(db));
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_conn_last_insert_rowid(AmberCtx *cx, AmberValue self,
-                                        const AmberValue *args, size_t argc,
-                                        AmberValue *out) {
+SputnikStatus amsq_conn_last_insert_rowid(SputnikCtx *cx, SputnikValue self,
+                                        const SputnikValue *args, size_t argc,
+                                        SputnikValue *out) {
   (void)args;
   (void)argc;
   sqlite3 *db = live_db(cx, self);
   if (db == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
-  *out = amber_make_int(cx, sqlite3_last_insert_rowid(db));
-  return AMBER_OK;
+  *out = sputnik_make_int(cx, sqlite3_last_insert_rowid(db));
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_conn_interrupt(AmberCtx *cx, AmberValue self,
-                                const AmberValue *args, size_t argc,
-                                AmberValue *out) {
+SputnikStatus amsq_conn_interrupt(SputnikCtx *cx, SputnikValue self,
+                                const SputnikValue *args, size_t argc,
+                                SputnikValue *out) {
   (void)args;
   (void)argc;
   sqlite3 *db = live_db(cx, self);
   if (db == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   sqlite3_interrupt(db);
-  *out = amber_make_null(cx);
-  return AMBER_OK;
+  *out = sputnik_make_null(cx);
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_conn_busy_timeout(AmberCtx *cx, AmberValue self,
-                                   const AmberValue *args, size_t argc,
-                                   AmberValue *out) {
+SputnikStatus amsq_conn_busy_timeout(SputnikCtx *cx, SputnikValue self,
+                                   const SputnikValue *args, size_t argc,
+                                   SputnikValue *out) {
   sqlite3 *db = live_db(cx, self);
   if (db == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   int64_t ms = 0;
   if (!arg_int(cx, args, argc, 0, &ms)) {
-    return amber_fault(cx, "TypeError", "busy_timeout expects Int milliseconds");
+    return sputnik_fault(cx, "TypeError", "busy_timeout expects Int milliseconds");
   }
   sqlite3_busy_timeout(db, (int)ms);
-  *out = amber_make_null(cx);
-  return AMBER_OK;
+  *out = sputnik_make_null(cx);
+  return SPUTNIK_OK;
 }
 
 /* ---------------------------------------------------- ATTACH / VACUUM guard */
@@ -589,11 +589,11 @@ static int begins_with_keyword(const char *sql, size_t len, const char *word) {
 /* Reject ATTACH/DETACH and `VACUUM ... INTO`, which can open or write files
  * outside the original database path (design §11, §15). Best-effort textual
  * guard for v1. */
-static AmberStatus reject_file_escape(AmberCtx *cx, const char *sql,
+static SputnikStatus reject_file_escape(SputnikCtx *cx, const char *sql,
                                       size_t len) {
   if (begins_with_keyword(sql, len, "ATTACH") ||
       begins_with_keyword(sql, len, "DETACH")) {
-    return amber_fault(cx, "Sqlite3.MisuseError",
+    return sputnik_fault(cx, "Sqlite3.MisuseError",
                        "ATTACH/DETACH is not permitted (a future attach() API "
                        "will add explicit capability checks)");
   }
@@ -602,29 +602,29 @@ static AmberStatus reject_file_escape(AmberCtx *cx, const char *sql,
       char a = sql[i], b = sql[i + 1], c = sql[i + 2], d = sql[i + 3];
       if ((a == 'I' || a == 'i') && (b == 'N' || b == 'n') &&
           (c == 'T' || c == 't') && (d == 'O' || d == 'o')) {
-        return amber_fault(cx, "Sqlite3.MisuseError",
+        return sputnik_fault(cx, "Sqlite3.MisuseError",
                            "VACUUM INTO is not permitted (a future "
                            "vacuum_into() API will add capability checks)");
       }
     }
   }
-  return AMBER_OK;
+  return SPUTNIK_OK;
 }
 
 /* exec(sql) -> null. Trusted multi-statement path; no separate parameters. */
-AmberStatus amsq_conn_exec(AmberCtx *cx, AmberValue self, const AmberValue *args,
-                           size_t argc, AmberValue *out) {
+SputnikStatus amsq_conn_exec(SputnikCtx *cx, SputnikValue self, const SputnikValue *args,
+                           size_t argc, SputnikValue *out) {
   sqlite3 *db = live_db(cx, self);
   if (db == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   const char *sql = NULL;
   size_t sql_len = 0;
   if (!arg_str(cx, args, argc, 0, &sql, &sql_len)) {
-    return amber_fault(cx, "TypeError", "exec expects a Str");
+    return sputnik_fault(cx, "TypeError", "exec expects a Str");
   }
-  if (reject_file_escape(cx, sql, sql_len) != AMBER_OK) {
-    return AMBER_ERR;
+  if (reject_file_escape(cx, sql, sql_len) != SPUTNIK_OK) {
+    return SPUTNIK_ERR;
   }
   char *errmsg = NULL;
   int rc = sqlite3_exec(db, sql, NULL, NULL, &errmsg);
@@ -633,8 +633,8 @@ AmberStatus amsq_conn_exec(AmberCtx *cx, AmberValue self, const AmberValue *args
     if (cls == NULL) {
       cls = "Sqlite3.StepError";
     }
-    AmberStatus st =
-        amber_fault(cx, cls, errmsg != NULL ? errmsg : sqlite3_errstr(rc));
+    SputnikStatus st =
+        sputnik_fault(cx, cls, errmsg != NULL ? errmsg : sqlite3_errstr(rc));
     if (errmsg != NULL) {
       sqlite3_free(errmsg);
     }
@@ -643,26 +643,26 @@ AmberStatus amsq_conn_exec(AmberCtx *cx, AmberValue self, const AmberValue *args
   if (errmsg != NULL) {
     sqlite3_free(errmsg);
   }
-  *out = amber_make_null(cx);
-  return AMBER_OK;
+  *out = sputnik_make_null(cx);
+  return SPUTNIK_OK;
 }
 
 /* prepare(sql) -> Stmt. Prepares exactly one statement and rejects trailing
  * non-whitespace SQL (design §6.1). */
-AmberStatus amsq_conn_prepare(AmberCtx *cx, AmberValue self,
-                              const AmberValue *args, size_t argc,
-                              AmberValue *out) {
+SputnikStatus amsq_conn_prepare(SputnikCtx *cx, SputnikValue self,
+                              const SputnikValue *args, size_t argc,
+                              SputnikValue *out) {
   sqlite3 *db = live_db(cx, self);
   if (db == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   const char *sql = NULL;
   size_t sql_len = 0;
   if (!arg_str(cx, args, argc, 0, &sql, &sql_len)) {
-    return amber_fault(cx, "TypeError", "prepare expects a Str");
+    return sputnik_fault(cx, "TypeError", "prepare expects a Str");
   }
-  if (reject_file_escape(cx, sql, sql_len) != AMBER_OK) {
-    return AMBER_ERR;
+  if (reject_file_escape(cx, sql, sql_len) != SPUTNIK_OK) {
+    return SPUTNIK_ERR;
   }
   sqlite3_stmt *stmt = NULL;
   const char *tail = NULL;
@@ -671,7 +671,7 @@ AmberStatus amsq_conn_prepare(AmberCtx *cx, AmberValue self,
     return fault_for_rc(cx, db, rc, "Sqlite3.PrepareError");
   }
   if (stmt == NULL) {
-    return amber_fault(cx, "Sqlite3.PrepareError",
+    return sputnik_fault(cx, "Sqlite3.PrepareError",
                        "no statement to prepare (empty SQL)");
   }
   if (tail != NULL) {
@@ -683,7 +683,7 @@ AmberStatus amsq_conn_prepare(AmberCtx *cx, AmberValue self,
     }
     if (p < end) {
       sqlite3_finalize(stmt);
-      return amber_fault(cx, "Sqlite3.PrepareError",
+      return sputnik_fault(cx, "Sqlite3.PrepareError",
                          "trailing SQL after the first statement is not "
                          "allowed here (use exec for multi-statement scripts)");
     }
@@ -691,44 +691,44 @@ AmberStatus amsq_conn_prepare(AmberCtx *cx, AmberValue self,
   Stmt *box = (Stmt *)calloc(1, sizeof(Stmt));
   if (box == NULL) {
     sqlite3_finalize(stmt);
-    return amber_fault(cx, "Sqlite3.PrepareError", "out of memory");
+    return sputnik_fault(cx, "Sqlite3.PrepareError", "out of memory");
   }
   box->stmt = stmt;
   box->conn = conn_of(cx, self);
   if (box->conn == NULL) {
     sqlite3_finalize(stmt);
     free(box);
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   box->next = box->conn->statements;
   if (box->next != NULL) {
     box->next->previous = box;
   }
   box->conn->statements = box;
-  *out = amber_make_handle(cx, kStmtTag, box);
-  return AMBER_OK;
+  *out = sputnik_make_handle(cx, kStmtTag, box);
+  return SPUTNIK_OK;
 }
 
 /* probe(sql) -> Bool. Live feature probe: can the connection compile `sql`? */
-AmberStatus amsq_conn_probe(AmberCtx *cx, AmberValue self,
-                            const AmberValue *args, size_t argc,
-                            AmberValue *out) {
+SputnikStatus amsq_conn_probe(SputnikCtx *cx, SputnikValue self,
+                            const SputnikValue *args, size_t argc,
+                            SputnikValue *out) {
   sqlite3 *db = live_db(cx, self);
   if (db == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   const char *probe_sql = NULL;
   size_t probe_len = 0;
   if (!arg_str(cx, args, argc, 0, &probe_sql, &probe_len)) {
-    return amber_fault(cx, "TypeError", "probe expects a Str");
+    return sputnik_fault(cx, "TypeError", "probe expects a Str");
   }
   sqlite3_stmt *stmt = NULL;
   int rc = sqlite3_prepare_v2(db, probe_sql, (int)probe_len, &stmt, NULL);
   if (stmt != NULL) {
     sqlite3_finalize(stmt);
   }
-  *out = amber_make_bool(cx, rc == SQLITE_OK);
-  return AMBER_OK;
+  *out = sputnik_make_bool(cx, rc == SQLITE_OK);
+  return SPUTNIK_OK;
 }
 
 /* ---------------------------------------------------------- connection pool */
@@ -780,33 +780,33 @@ static struct timespec realtime_after_ns(int64_t delay_ns) {
   return deadline;
 }
 
-static PoolCore *pool_of(AmberCtx *cx, AmberValue self) {
+static PoolCore *pool_of(SputnikCtx *cx, SputnikValue self) {
   void *raw = NULL;
-  if (!amber_handle_ptr(cx, self, kPoolCoreTag, &raw)) {
+  if (!sputnik_handle_ptr(cx, self, kPoolCoreTag, &raw)) {
     return NULL;
   }
   PoolCore *pool = (PoolCore *)raw;
   if (pool == NULL || pool->magic != AMSQ_POOL_MAGIC) {
-    amber_fault(cx, "TypeError", "invalid sqlite3 pool handle");
+    sputnik_fault(cx, "TypeError", "invalid sqlite3 pool handle");
     return NULL;
   }
   return pool;
 }
 
-static LeaseConn *lease_arg(AmberCtx *cx, AmberValue value) {
+static LeaseConn *lease_arg(SputnikCtx *cx, SputnikValue value) {
   void *raw = NULL;
-  if (!amber_handle_ptr(cx, value, kLeaseConnTag, &raw)) {
+  if (!sputnik_handle_ptr(cx, value, kLeaseConnTag, &raw)) {
     return NULL;
   }
   LeaseConn *lease = (LeaseConn *)raw;
   if (lease == NULL || lease->magic != AMSQ_LEASE_MAGIC) {
-    amber_fault(cx, "TypeError", "invalid sqlite3 pool lease handle");
+    sputnik_fault(cx, "TypeError", "invalid sqlite3 pool lease handle");
     return NULL;
   }
   return lease;
 }
 
-static Conn *pool_open_conn(AmberCtx *cx, PoolCore *pool) {
+static Conn *pool_open_conn(SputnikCtx *cx, PoolCore *pool) {
   sqlite3 *db = NULL;
   int rc = sqlite3_open_v2(pool->path, &db, pool->flags, NULL);
   if (rc != SQLITE_OK) {
@@ -821,7 +821,7 @@ static Conn *pool_open_conn(AmberCtx *cx, PoolCore *pool) {
   Conn *conn = conn_box_new(db);
   if (conn == NULL) {
     sqlite3_close_v2(db);
-    amber_fault(cx, "Sqlite3.OpenError", "out of memory");
+    sputnik_fault(cx, "Sqlite3.OpenError", "out of memory");
     return NULL;
   }
   conn->pool = pool;
@@ -1001,8 +1001,8 @@ static int lease_finish(LeaseConn *lease, int discard) {
 }
 
 /* PoolCore(path, flags, busy_ms, min_size, max_size, idle_ns, lifetime_ns). */
-AmberStatus amsq_pool_core_new(AmberCtx *cx, const AmberValue *args,
-                               size_t argc, AmberValue *out) {
+SputnikStatus amsq_pool_core_new(SputnikCtx *cx, const SputnikValue *args,
+                               size_t argc, SputnikValue *out) {
   const char *path = NULL;
   size_t path_len = 0;
   int64_t flags = 0, busy_ms = -1, min_size = 0, max_size = 0;
@@ -1014,22 +1014,22 @@ AmberStatus amsq_pool_core_new(AmberCtx *cx, const AmberValue *args,
       !arg_int(cx, args, argc, 4, &max_size) ||
       !arg_int(cx, args, argc, 5, &idle_ns) ||
       !arg_int(cx, args, argc, 6, &lifetime_ns)) {
-    return amber_fault(cx, "TypeError",
+    return sputnik_fault(cx, "TypeError",
                        "pool expects path, flags, busy timeout, sizes, and "
                        "lifetime values");
   }
   if (min_size < 0 || max_size <= 0 || min_size > max_size) {
-    return amber_fault(cx, "ArgumentError",
+    return sputnik_fault(cx, "ArgumentError",
                        "pool sizes require 0 <= min_size <= max_size");
   }
   PoolCore *pool = (PoolCore *)calloc(1, sizeof(PoolCore));
   if (pool == NULL) {
-    return amber_fault(cx, "Sqlite3.PoolError", "out of memory");
+    return sputnik_fault(cx, "Sqlite3.PoolError", "out of memory");
   }
   pool->path = (char *)malloc(path_len + 1);
   if (pool->path == NULL) {
     free(pool);
-    return amber_fault(cx, "Sqlite3.PoolError", "out of memory");
+    return sputnik_fault(cx, "Sqlite3.PoolError", "out of memory");
   }
   memcpy(pool->path, path, path_len);
   pool->path[path_len] = '\0';
@@ -1037,14 +1037,14 @@ AmberStatus amsq_pool_core_new(AmberCtx *cx, const AmberValue *args,
   if (pool->mutex == NULL) {
     free(pool->path);
     free(pool);
-    return amber_fault(cx, "Sqlite3.PoolError",
+    return sputnik_fault(cx, "Sqlite3.PoolError",
                        "SQLite mutex support is unavailable");
   }
   if (pthread_mutex_init(&pool->wait_mutex, NULL) != 0) {
     sqlite3_mutex_free(pool->mutex);
     free(pool->path);
     free(pool);
-    return amber_fault(cx, "Sqlite3.PoolError",
+    return sputnik_fault(cx, "Sqlite3.PoolError",
                        "could not initialize pool wait mutex");
   }
   if (pthread_cond_init(&pool->wait_cond, NULL) != 0) {
@@ -1052,7 +1052,7 @@ AmberStatus amsq_pool_core_new(AmberCtx *cx, const AmberValue *args,
     sqlite3_mutex_free(pool->mutex);
     free(pool->path);
     free(pool);
-    return amber_fault(cx, "Sqlite3.PoolError",
+    return sputnik_fault(cx, "Sqlite3.PoolError",
                        "could not initialize pool wait condition");
   }
   pool->wait_initialized = 1;
@@ -1065,8 +1065,8 @@ AmberStatus amsq_pool_core_new(AmberCtx *cx, const AmberValue *args,
   pool->max_lifetime_ns = lifetime_ns;
   pool->generation = 1;
   pool->refs = 1;
-  *out = amber_make_handle(cx, kPoolCoreTag, pool);
-  return AMBER_OK;
+  *out = sputnik_make_handle(cx, kPoolCoreTag, pool);
+  return SPUTNIK_OK;
 }
 
 void amsq_pool_core_free(void *handle) {
@@ -1079,16 +1079,16 @@ void amsq_pool_core_free(void *handle) {
 }
 
 /* Nonblocking acquire. null means capacity is currently exhausted; a two-item
- * list means [LeaseConn, freshly_opened]. The Amber layer owns cooperative
+ * list means [LeaseConn, freshly_opened]. The Sputnik layer owns cooperative
  * waiting, timeout, and cancellation around this leaf. */
-AmberStatus amsq_pool_try_acquire(AmberCtx *cx, AmberValue self,
-                                  const AmberValue *args, size_t argc,
-                                  AmberValue *out) {
+SputnikStatus amsq_pool_try_acquire(SputnikCtx *cx, SputnikValue self,
+                                  const SputnikValue *args, size_t argc,
+                                  SputnikValue *out) {
   (void)args;
   (void)argc;
   PoolCore *pool = pool_of(cx, self);
   if (pool == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
 
   Conn *conn = NULL;
@@ -1097,7 +1097,7 @@ AmberStatus amsq_pool_try_acquire(AmberCtx *cx, AmberValue self,
   pool_lock(pool);
   if (pool->closed) {
     pool_unlock(pool);
-    return amber_fault(cx, "Sqlite3.PoolClosedError",
+    return sputnik_fault(cx, "Sqlite3.PoolClosedError",
                        "connection pool is closed");
   }
   pool_prune_locked(pool, now);
@@ -1113,8 +1113,8 @@ AmberStatus amsq_pool_try_acquire(AmberCtx *cx, AmberValue self,
     fresh = 1;
   } else {
     pool_unlock(pool);
-    *out = amber_make_null(cx);
-    return AMBER_OK;
+    *out = sputnik_make_null(cx);
+    return SPUTNIK_OK;
   }
   pool_unlock(pool);
 
@@ -1125,7 +1125,7 @@ AmberStatus amsq_pool_try_acquire(AmberCtx *cx, AmberValue self,
       pool->open_count--;
       pool->leased_count--;
       pool_unlock(pool);
-      return AMBER_ERR;
+      return SPUTNIK_ERR;
     }
   }
 
@@ -1147,7 +1147,7 @@ AmberStatus amsq_pool_try_acquire(AmberCtx *cx, AmberValue self,
     if (conn != NULL) {
       conn_box_free(conn);
     }
-    return amber_fault(cx, "Sqlite3.PoolError", "out of memory");
+    return sputnik_fault(cx, "Sqlite3.PoolError", "out of memory");
   }
 
   pool_lock(pool);
@@ -1161,51 +1161,51 @@ AmberStatus amsq_pool_try_acquire(AmberCtx *cx, AmberValue self,
   pool->refs++;
   pool_unlock(pool);
 
-  AmberValue fields[2];
-  fields[0] = amber_make_handle(cx, kLeaseConnTag, lease);
-  fields[1] = amber_make_bool(cx, fresh);
-  *out = amber_make_list(cx, fields, 2);
-  return AMBER_OK;
+  SputnikValue fields[2];
+  fields[0] = sputnik_make_handle(cx, kLeaseConnTag, lease);
+  fields[1] = sputnik_make_bool(cx, fresh);
+  *out = sputnik_make_list(cx, fields, 2);
+  return SPUTNIK_OK;
 }
 
-/* Blocking half of pool checkout. Amber first calls try_acquire so the common
+/* Blocking half of pool checkout. Sputnik first calls try_acquire so the common
  * uncontended path never enters the executor. Once capacity is exhausted this
  * thunk waits on the native pool condition; its logical symbol is declared in
  * `blocking_symbols`, so a VM strand is parked and no RuntimeWorld bridge lock
  * is retained while the OS thread sleeps. */
-AmberStatus amsq_pool_acquire_wait(AmberCtx *cx, AmberValue self,
-                                   const AmberValue *args, size_t argc,
-                                   AmberValue *out) {
+SputnikStatus amsq_pool_acquire_wait(SputnikCtx *cx, SputnikValue self,
+                                   const SputnikValue *args, size_t argc,
+                                   SputnikValue *out) {
   PoolCore *pool = pool_of(cx, self);
   int64_t timeout_ns = -1;
   if (pool == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   if (!arg_int(cx, args, argc, 0, &timeout_ns) || timeout_ns < -1) {
-    return amber_fault(cx, "TypeError",
+    return sputnik_fault(cx, "TypeError",
                        "pool acquire wait expects timeout nanoseconds or -1");
   }
 
   const int64_t started = monotonic_ns();
   pool_waiter_change(pool, 1);
   while (1) {
-    if (amber_task_cancelled(cx)) {
+    if (sputnik_task_cancelled(cx)) {
       pool_waiter_change(pool, -1);
-      return amber_fault(cx, "CancelledError", "task cancelled");
+      return sputnik_fault(cx, "CancelledError", "task cancelled");
     }
 
     pthread_mutex_lock(&pool->wait_mutex);
     const uint64_t observed_generation = pool->wait_generation;
     pthread_mutex_unlock(&pool->wait_mutex);
 
-    AmberStatus status = amsq_pool_try_acquire(cx, self, NULL, 0, out);
-    if (status != AMBER_OK) {
+    SputnikStatus status = amsq_pool_try_acquire(cx, self, NULL, 0, out);
+    if (status != SPUTNIK_OK) {
       pool_waiter_change(pool, -1);
       return status;
     }
-    if (!amber_is_null(cx, *out)) {
+    if (!sputnik_is_null(cx, *out)) {
       pool_waiter_change(pool, -1);
-      return AMBER_OK;
+      return SPUTNIK_OK;
     }
 
     int64_t wait_ns = 100000000LL; /* cancellation polling bound: 100 ms */
@@ -1214,7 +1214,7 @@ AmberStatus amsq_pool_acquire_wait(AmberCtx *cx, AmberValue self,
       const int64_t remaining = timeout_ns - elapsed;
       if (remaining <= 0) {
         pool_waiter_change(pool, -1);
-        return amber_fault(cx, "Sqlite3.PoolTimeoutError",
+        return sputnik_fault(cx, "Sqlite3.PoolTimeoutError",
                            "timed out waiting for a database connection");
       }
       if (remaining < wait_ns) {
@@ -1232,48 +1232,48 @@ AmberStatus amsq_pool_acquire_wait(AmberCtx *cx, AmberValue self,
   }
 }
 
-AmberStatus amsq_pool_release(AmberCtx *cx, AmberValue self,
-                              const AmberValue *args, size_t argc,
-                              AmberValue *out) {
+SputnikStatus amsq_pool_release(SputnikCtx *cx, SputnikValue self,
+                              const SputnikValue *args, size_t argc,
+                              SputnikValue *out) {
   PoolCore *pool = pool_of(cx, self);
   int discard = 0;
   if (pool == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   if (argc != 2 || !arg_bool(cx, args, argc, 1, &discard)) {
-    return amber_fault(cx, "TypeError",
+    return sputnik_fault(cx, "TypeError",
                        "pool release expects (LeaseConn, Bool discard)");
   }
   LeaseConn *lease = lease_arg(cx, args[0]);
   if (lease == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   if (lease->pool != NULL && lease->pool != pool) {
-    return amber_fault(cx, "Sqlite3.PoolLeaseError",
+    return sputnik_fault(cx, "Sqlite3.PoolLeaseError",
                        "lease belongs to a different connection pool");
   }
   int waiting_count = lease_finish(lease, discard);
-  *out = amber_make_int(cx, waiting_count);
-  return AMBER_OK;
+  *out = sputnik_make_int(cx, waiting_count);
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_pool_lease_released(AmberCtx *cx, AmberValue self,
-                                     const AmberValue *args, size_t argc,
-                                     AmberValue *out) {
+SputnikStatus amsq_pool_lease_released(SputnikCtx *cx, SputnikValue self,
+                                     const SputnikValue *args, size_t argc,
+                                     SputnikValue *out) {
   PoolCore *pool = pool_of(cx, self);
   if (pool == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   if (argc != 1) {
-    return amber_fault(cx, "TypeError", "lease_released expects LeaseConn");
+    return sputnik_fault(cx, "TypeError", "lease_released expects LeaseConn");
   }
   LeaseConn *lease = lease_arg(cx, args[0]);
   if (lease == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   (void)pool;
-  *out = amber_make_bool(cx, lease->released);
-  return AMBER_OK;
+  *out = sputnik_make_bool(cx, lease->released);
+  return SPUTNIK_OK;
 }
 
 void amsq_lease_conn_free(void *handle) {
@@ -1289,16 +1289,16 @@ void amsq_lease_conn_free(void *handle) {
   free(lease);
 }
 
-AmberStatus amsq_pool_waiter(AmberCtx *cx, AmberValue self,
-                             const AmberValue *args, size_t argc,
-                             AmberValue *out) {
+SputnikStatus amsq_pool_waiter(SputnikCtx *cx, SputnikValue self,
+                             const SputnikValue *args, size_t argc,
+                             SputnikValue *out) {
   PoolCore *pool = pool_of(cx, self);
   int64_t delta = 0;
   if (pool == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   if (!arg_int(cx, args, argc, 0, &delta) || (delta != 1 && delta != -1)) {
-    return amber_fault(cx, "TypeError", "pool waiter delta must be 1 or -1");
+    return sputnik_fault(cx, "TypeError", "pool waiter delta must be 1 or -1");
   }
   pool_lock(pool);
   pool->waiting_count += (int)delta;
@@ -1306,134 +1306,134 @@ AmberStatus amsq_pool_waiter(AmberCtx *cx, AmberValue self,
     pool->waiting_count = 0;
   }
   pool_unlock(pool);
-  *out = amber_make_null(cx);
-  return AMBER_OK;
+  *out = sputnik_make_null(cx);
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_pool_stats(AmberCtx *cx, AmberValue self,
-                            const AmberValue *args, size_t argc,
-                            AmberValue *out) {
+SputnikStatus amsq_pool_stats(SputnikCtx *cx, SputnikValue self,
+                            const SputnikValue *args, size_t argc,
+                            SputnikValue *out) {
   (void)args;
   (void)argc;
   PoolCore *pool = pool_of(cx, self);
   if (pool == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
-  AmberValue fields[8];
+  SputnikValue fields[8];
   pool_lock(pool);
-  fields[0] = amber_make_int(cx, pool->min_size);
-  fields[1] = amber_make_int(cx, pool->max_size);
-  fields[2] = amber_make_int(cx, pool->open_count);
-  fields[3] = amber_make_int(cx, pool->idle_count);
-  fields[4] = amber_make_int(cx, pool->leased_count);
-  fields[5] = amber_make_int(cx, pool->waiting_count);
-  fields[6] = amber_make_bool(cx, pool->closed);
-  fields[7] = amber_make_int(cx, (int64_t)pool->generation);
+  fields[0] = sputnik_make_int(cx, pool->min_size);
+  fields[1] = sputnik_make_int(cx, pool->max_size);
+  fields[2] = sputnik_make_int(cx, pool->open_count);
+  fields[3] = sputnik_make_int(cx, pool->idle_count);
+  fields[4] = sputnik_make_int(cx, pool->leased_count);
+  fields[5] = sputnik_make_int(cx, pool->waiting_count);
+  fields[6] = sputnik_make_bool(cx, pool->closed);
+  fields[7] = sputnik_make_int(cx, (int64_t)pool->generation);
   pool_unlock(pool);
-  *out = amber_make_list(cx, fields, 8);
-  return AMBER_OK;
+  *out = sputnik_make_list(cx, fields, 8);
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_pool_prune(AmberCtx *cx, AmberValue self,
-                            const AmberValue *args, size_t argc,
-                            AmberValue *out) {
+SputnikStatus amsq_pool_prune(SputnikCtx *cx, SputnikValue self,
+                            const SputnikValue *args, size_t argc,
+                            SputnikValue *out) {
   (void)args;
   (void)argc;
   PoolCore *pool = pool_of(cx, self);
   if (pool == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   pool_lock(pool);
   int closed = pool_prune_locked(pool, monotonic_ns());
   pool_unlock(pool);
-  *out = amber_make_int(cx, closed);
-  return AMBER_OK;
+  *out = sputnik_make_int(cx, closed);
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_pool_disconnect(AmberCtx *cx, AmberValue self,
-                                 const AmberValue *args, size_t argc,
-                                 AmberValue *out) {
+SputnikStatus amsq_pool_disconnect(SputnikCtx *cx, SputnikValue self,
+                                 const SputnikValue *args, size_t argc,
+                                 SputnikValue *out) {
   (void)args;
   (void)argc;
   PoolCore *pool = pool_of(cx, self);
   if (pool == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   pool_lock(pool);
   pool->generation++;
   int closed = pool_close_idle_locked(pool);
   pool_unlock(pool);
-  *out = amber_make_int(cx, closed);
-  return AMBER_OK;
+  *out = sputnik_make_int(cx, closed);
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_pool_close(AmberCtx *cx, AmberValue self,
-                            const AmberValue *args, size_t argc,
-                            AmberValue *out) {
+SputnikStatus amsq_pool_close(SputnikCtx *cx, SputnikValue self,
+                            const SputnikValue *args, size_t argc,
+                            SputnikValue *out) {
   (void)args;
   (void)argc;
   PoolCore *pool = pool_of(cx, self);
   if (pool == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   pool_close_internal(pool);
-  *out = amber_make_null(cx);
-  return AMBER_OK;
+  *out = sputnik_make_null(cx);
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_pool_closed(AmberCtx *cx, AmberValue self,
-                             const AmberValue *args, size_t argc,
-                             AmberValue *out) {
+SputnikStatus amsq_pool_closed(SputnikCtx *cx, SputnikValue self,
+                             const SputnikValue *args, size_t argc,
+                             SputnikValue *out) {
   (void)args;
   (void)argc;
   PoolCore *pool = pool_of(cx, self);
   if (pool == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   pool_lock(pool);
   int closed = pool->closed;
   pool_unlock(pool);
-  *out = amber_make_bool(cx, closed);
-  return AMBER_OK;
+  *out = sputnik_make_bool(cx, closed);
+  return SPUTNIK_OK;
 }
 
 /* --------------------------------------------------------------- statement */
 
-static Stmt *stmt_of(AmberCtx *cx, AmberValue self) {
+static Stmt *stmt_of(SputnikCtx *cx, SputnikValue self) {
   void *p = NULL;
-  if (!amber_handle_ptr(cx, self, kStmtTag, &p)) {
+  if (!sputnik_handle_ptr(cx, self, kStmtTag, &p)) {
     return NULL;
   }
   return (Stmt *)p;
 }
 
-static sqlite3_stmt *live_stmt(AmberCtx *cx, AmberValue self) {
+static sqlite3_stmt *live_stmt(SputnikCtx *cx, SputnikValue self) {
   Stmt *box = stmt_of(cx, self);
   if (box == NULL) {
     return NULL;
   }
   if (box->stmt == NULL) {
-    amber_fault(cx, "LifetimeError", "statement is closed");
+    sputnik_fault(cx, "LifetimeError", "statement is closed");
     return NULL;
   }
   return box->stmt;
 }
 
-AmberStatus amsq_stmt_finalize(AmberCtx *cx, AmberValue self,
-                               const AmberValue *args, size_t argc,
-                               AmberValue *out) {
+SputnikStatus amsq_stmt_finalize(SputnikCtx *cx, SputnikValue self,
+                               const SputnikValue *args, size_t argc,
+                               SputnikValue *out) {
   (void)args;
   (void)argc;
   Stmt *box = stmt_of(cx, self);
   if (box == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   stmt_finalize_box(box);
-  *out = amber_make_null(cx);
-  return AMBER_OK;
+  *out = sputnik_make_null(cx);
+  return SPUTNIK_OK;
 }
 
-void amsq_stmt_free(AmberCtx *cx, void *handle) {
+void amsq_stmt_free(SputnikCtx *cx, void *handle) {
   (void)cx;
   Stmt *box = (Stmt *)handle;
   if (box == NULL) {
@@ -1443,63 +1443,63 @@ void amsq_stmt_free(AmberCtx *cx, void *handle) {
   free(box);
 }
 
-AmberStatus amsq_stmt_closed(AmberCtx *cx, AmberValue self,
-                             const AmberValue *args, size_t argc,
-                             AmberValue *out) {
+SputnikStatus amsq_stmt_closed(SputnikCtx *cx, SputnikValue self,
+                             const SputnikValue *args, size_t argc,
+                             SputnikValue *out) {
   (void)args;
   (void)argc;
   Stmt *box = stmt_of(cx, self);
   if (box == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
-  *out = amber_make_bool(cx, box->stmt == NULL);
-  return AMBER_OK;
+  *out = sputnik_make_bool(cx, box->stmt == NULL);
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_stmt_sql(AmberCtx *cx, AmberValue self, const AmberValue *args,
-                          size_t argc, AmberValue *out) {
+SputnikStatus amsq_stmt_sql(SputnikCtx *cx, SputnikValue self, const SputnikValue *args,
+                          size_t argc, SputnikValue *out) {
   (void)args;
   (void)argc;
   sqlite3_stmt *stmt = live_stmt(cx, self);
   if (stmt == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   const char *s = sqlite3_sql(stmt);
   if (s == NULL) {
     s = "";
   }
-  *out = amber_make_str(cx, s, strlen(s));
-  return AMBER_OK;
+  *out = sputnik_make_str(cx, s, strlen(s));
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_stmt_column_count(AmberCtx *cx, AmberValue self,
-                                   const AmberValue *args, size_t argc,
-                                   AmberValue *out) {
+SputnikStatus amsq_stmt_column_count(SputnikCtx *cx, SputnikValue self,
+                                   const SputnikValue *args, size_t argc,
+                                   SputnikValue *out) {
   (void)args;
   (void)argc;
   sqlite3_stmt *stmt = live_stmt(cx, self);
   if (stmt == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
-  *out = amber_make_int(cx, sqlite3_column_count(stmt));
-  return AMBER_OK;
+  *out = sputnik_make_int(cx, sqlite3_column_count(stmt));
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_stmt_column_names(AmberCtx *cx, AmberValue self,
-                                   const AmberValue *args, size_t argc,
-                                   AmberValue *out) {
+SputnikStatus amsq_stmt_column_names(SputnikCtx *cx, SputnikValue self,
+                                   const SputnikValue *args, size_t argc,
+                                   SputnikValue *out) {
   (void)args;
   (void)argc;
   sqlite3_stmt *stmt = live_stmt(cx, self);
   if (stmt == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   int n = sqlite3_column_count(stmt);
-  AmberValue *items = NULL;
+  SputnikValue *items = NULL;
   if (n > 0) {
-    items = (AmberValue *)malloc(sizeof(AmberValue) * (size_t)n);
+    items = (SputnikValue *)malloc(sizeof(SputnikValue) * (size_t)n);
     if (items == NULL) {
-      return amber_fault(cx, "Sqlite3.Error", "out of memory");
+      return sputnik_fault(cx, "Sqlite3.Error", "out of memory");
     }
   }
   for (int i = 0; i < n; i++) {
@@ -1507,26 +1507,26 @@ AmberStatus amsq_stmt_column_names(AmberCtx *cx, AmberValue self,
     if (name == NULL) {
       name = "";
     }
-    items[i] = amber_make_str(cx, name, strlen(name));
+    items[i] = sputnik_make_str(cx, name, strlen(name));
   }
-  *out = amber_make_list(cx, items, (size_t)n);
+  *out = sputnik_make_list(cx, items, (size_t)n);
   free(items);
-  return AMBER_OK;
+  return SPUTNIK_OK;
 }
 
 /* column_meta() -> List of [name, database, table, origin, decltype]. Missing
  * metadata entries are empty strings. */
-AmberStatus amsq_stmt_column_meta(AmberCtx *cx, AmberValue self,
-                                  const AmberValue *args, size_t argc,
-                                  AmberValue *out) {
+SputnikStatus amsq_stmt_column_meta(SputnikCtx *cx, SputnikValue self,
+                                  const SputnikValue *args, size_t argc,
+                                  SputnikValue *out) {
   (void)args;
   (void)argc;
   sqlite3_stmt *stmt = live_stmt(cx, self);
   if (stmt == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   int n = sqlite3_column_count(stmt);
-  AmberValue rows[256];
+  SputnikValue rows[256];
   if (n > 256) {
     n = 256;
   }
@@ -1541,211 +1541,211 @@ AmberStatus amsq_stmt_column_meta(AmberCtx *cx, AmberValue self,
     table = sqlite3_column_table_name(stmt, i);
     origin = sqlite3_column_origin_name(stmt, i);
 #endif
-    AmberValue fields[5];
-    fields[0] = amber_make_str(cx, name ? name : "", name ? strlen(name) : 0);
+    SputnikValue fields[5];
+    fields[0] = sputnik_make_str(cx, name ? name : "", name ? strlen(name) : 0);
     fields[1] =
-        amber_make_str(cx, dbname ? dbname : "", dbname ? strlen(dbname) : 0);
+        sputnik_make_str(cx, dbname ? dbname : "", dbname ? strlen(dbname) : 0);
     fields[2] =
-        amber_make_str(cx, table ? table : "", table ? strlen(table) : 0);
+        sputnik_make_str(cx, table ? table : "", table ? strlen(table) : 0);
     fields[3] =
-        amber_make_str(cx, origin ? origin : "", origin ? strlen(origin) : 0);
-    fields[4] = amber_make_str(cx, decl ? decl : "", decl ? strlen(decl) : 0);
-    rows[i] = amber_make_list(cx, fields, 5);
+        sputnik_make_str(cx, origin ? origin : "", origin ? strlen(origin) : 0);
+    fields[4] = sputnik_make_str(cx, decl ? decl : "", decl ? strlen(decl) : 0);
+    rows[i] = sputnik_make_list(cx, fields, 5);
   }
-  *out = amber_make_list(cx, rows, (size_t)n);
-  return AMBER_OK;
+  *out = sputnik_make_list(cx, rows, (size_t)n);
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_stmt_parameter_count(AmberCtx *cx, AmberValue self,
-                                      const AmberValue *args, size_t argc,
-                                      AmberValue *out) {
+SputnikStatus amsq_stmt_parameter_count(SputnikCtx *cx, SputnikValue self,
+                                      const SputnikValue *args, size_t argc,
+                                      SputnikValue *out) {
   (void)args;
   (void)argc;
   sqlite3_stmt *stmt = live_stmt(cx, self);
   if (stmt == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
-  *out = amber_make_int(cx, sqlite3_bind_parameter_count(stmt));
-  return AMBER_OK;
+  *out = sputnik_make_int(cx, sqlite3_bind_parameter_count(stmt));
+  return SPUTNIK_OK;
 }
 
 /* parameter_names() -> List. Positional slots yield null; named slots yield the
  * SQLite spelling with prefix, e.g. ":id". */
-AmberStatus amsq_stmt_parameter_names(AmberCtx *cx, AmberValue self,
-                                      const AmberValue *args, size_t argc,
-                                      AmberValue *out) {
+SputnikStatus amsq_stmt_parameter_names(SputnikCtx *cx, SputnikValue self,
+                                      const SputnikValue *args, size_t argc,
+                                      SputnikValue *out) {
   (void)args;
   (void)argc;
   sqlite3_stmt *stmt = live_stmt(cx, self);
   if (stmt == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   int n = sqlite3_bind_parameter_count(stmt);
-  AmberValue items[512];
+  SputnikValue items[512];
   if (n > 512) {
     n = 512;
   }
   for (int i = 1; i <= n; i++) {
     const char *name = sqlite3_bind_parameter_name(stmt, i);
     if (name == NULL) {
-      items[i - 1] = amber_make_null(cx);
+      items[i - 1] = sputnik_make_null(cx);
     } else {
-      items[i - 1] = amber_make_str(cx, name, strlen(name));
+      items[i - 1] = sputnik_make_str(cx, name, strlen(name));
     }
   }
-  *out = amber_make_list(cx, items, (size_t)n);
-  return AMBER_OK;
+  *out = sputnik_make_list(cx, items, (size_t)n);
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_stmt_readonly(AmberCtx *cx, AmberValue self,
-                               const AmberValue *args, size_t argc,
-                               AmberValue *out) {
+SputnikStatus amsq_stmt_readonly(SputnikCtx *cx, SputnikValue self,
+                               const SputnikValue *args, size_t argc,
+                               SputnikValue *out) {
   (void)args;
   (void)argc;
   sqlite3_stmt *stmt = live_stmt(cx, self);
   if (stmt == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
-  *out = amber_make_bool(cx, sqlite3_stmt_readonly(stmt) != 0);
-  return AMBER_OK;
+  *out = sputnik_make_bool(cx, sqlite3_stmt_readonly(stmt) != 0);
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_stmt_busy(AmberCtx *cx, AmberValue self, const AmberValue *args,
-                           size_t argc, AmberValue *out) {
+SputnikStatus amsq_stmt_busy(SputnikCtx *cx, SputnikValue self, const SputnikValue *args,
+                           size_t argc, SputnikValue *out) {
   (void)args;
   (void)argc;
   sqlite3_stmt *stmt = live_stmt(cx, self);
   if (stmt == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
-  *out = amber_make_bool(cx, sqlite3_stmt_busy(stmt) != 0);
-  return AMBER_OK;
+  *out = sputnik_make_bool(cx, sqlite3_stmt_busy(stmt) != 0);
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_stmt_reset(AmberCtx *cx, AmberValue self,
-                            const AmberValue *args, size_t argc,
-                            AmberValue *out) {
+SputnikStatus amsq_stmt_reset(SputnikCtx *cx, SputnikValue self,
+                            const SputnikValue *args, size_t argc,
+                            SputnikValue *out) {
   (void)args;
   (void)argc;
   sqlite3_stmt *stmt = live_stmt(cx, self);
   if (stmt == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   sqlite3_reset(stmt);
-  *out = amber_make_null(cx);
-  return AMBER_OK;
+  *out = sputnik_make_null(cx);
+  return SPUTNIK_OK;
 }
 
-AmberStatus amsq_stmt_clear_bindings(AmberCtx *cx, AmberValue self,
-                                     const AmberValue *args, size_t argc,
-                                     AmberValue *out) {
+SputnikStatus amsq_stmt_clear_bindings(SputnikCtx *cx, SputnikValue self,
+                                     const SputnikValue *args, size_t argc,
+                                     SputnikValue *out) {
   (void)args;
   (void)argc;
   sqlite3_stmt *stmt = live_stmt(cx, self);
   if (stmt == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   sqlite3_clear_bindings(stmt);
-  *out = amber_make_null(cx);
-  return AMBER_OK;
+  *out = sputnik_make_null(cx);
+  return SPUTNIK_OK;
 }
 
-/* Bind one Amber scalar value to slot `idx` (1-based). */
-static AmberStatus bind_one(AmberCtx *cx, sqlite3 *db, sqlite3_stmt *stmt,
-                            int idx, AmberValue v) {
+/* Bind one Sputnik scalar value to slot `idx` (1-based). */
+static SputnikStatus bind_one(SputnikCtx *cx, sqlite3 *db, sqlite3_stmt *stmt,
+                            int idx, SputnikValue v) {
   int rc = SQLITE_OK;
-  if (amber_is_null(cx, v)) {
+  if (sputnik_is_null(cx, v)) {
     rc = sqlite3_bind_null(stmt, idx);
-  } else if (amber_is_bool(cx, v)) {
+  } else if (sputnik_is_bool(cx, v)) {
     int b = 0;
-    amber_as_bool(cx, v, &b);
+    sputnik_as_bool(cx, v, &b);
     rc = sqlite3_bind_int64(stmt, idx, b ? 1 : 0);
-  } else if (amber_is_int(cx, v)) {
+  } else if (sputnik_is_int(cx, v)) {
     int64_t n = 0;
-    amber_as_int(cx, v, &n);
+    sputnik_as_int(cx, v, &n);
     rc = sqlite3_bind_int64(stmt, idx, n);
-  } else if (amber_is_float(cx, v)) {
+  } else if (sputnik_is_float(cx, v)) {
     double d = 0;
-    amber_as_float(cx, v, &d);
+    sputnik_as_float(cx, v, &d);
     rc = sqlite3_bind_double(stmt, idx, d);
-  } else if (amber_is_str(cx, v)) {
+  } else if (sputnik_is_str(cx, v)) {
     const char *p = NULL;
     size_t len = 0;
-    amber_str_view(cx, v, &p, &len);
+    sputnik_str_view(cx, v, &p, &len);
     rc = sqlite3_bind_text(stmt, idx, p, (int)len, SQLITE_TRANSIENT);
-  } else if (amber_is_bytes(cx, v)) {
+  } else if (sputnik_is_bytes(cx, v)) {
     const uint8_t *p = NULL;
     size_t len = 0;
-    amber_bytes_view(cx, v, &p, &len);
+    sputnik_bytes_view(cx, v, &p, &len);
     rc = sqlite3_bind_blob(stmt, idx, p, (int)len, SQLITE_TRANSIENT);
   } else {
-    return amber_fault(cx, "TypeError",
+    return sputnik_fault(cx, "TypeError",
                        "unsupported bind value (expected null, Bool, Int, "
                        "Float, Str, or Bytes)");
   }
   if (rc != SQLITE_OK) {
     return fault_for_rc(cx, db, rc, "Sqlite3.BindError");
   }
-  return AMBER_OK;
+  return SPUTNIK_OK;
 }
 
-/* bind(values) -> null. Binds values[i] to slot i+1. The Amber layer builds the
+/* bind(values) -> null. Binds values[i] to slot i+1. The Sputnik layer builds the
  * positional list (resolving named params to order). */
-AmberStatus amsq_stmt_bind(AmberCtx *cx, AmberValue self, const AmberValue *args,
-                           size_t argc, AmberValue *out) {
+SputnikStatus amsq_stmt_bind(SputnikCtx *cx, SputnikValue self, const SputnikValue *args,
+                           size_t argc, SputnikValue *out) {
   sqlite3_stmt *stmt = live_stmt(cx, self);
   if (stmt == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
-  if (argc != 1 || !amber_is_list(cx, args[0])) {
-    return amber_fault(cx, "TypeError", "bind expects a List of values");
+  if (argc != 1 || !sputnik_is_list(cx, args[0])) {
+    return sputnik_fault(cx, "TypeError", "bind expects a List of values");
   }
   sqlite3 *db = sqlite3_db_handle(stmt);
-  size_t count = amber_list_len(cx, args[0]);
+  size_t count = sputnik_list_len(cx, args[0]);
   int expected = sqlite3_bind_parameter_count(stmt);
   if ((int)count != expected) {
-    return amber_fault(cx, "Sqlite3.BindError",
+    return sputnik_fault(cx, "Sqlite3.BindError",
                        "wrong number of bind values for statement");
   }
   for (size_t i = 0; i < count; i++) {
-    AmberValue v = amber_list_at(cx, args[0], i);
-    AmberStatus st = bind_one(cx, db, stmt, (int)i + 1, v);
-    if (st != AMBER_OK) {
+    SputnikValue v = sputnik_list_at(cx, args[0], i);
+    SputnikStatus st = bind_one(cx, db, stmt, (int)i + 1, v);
+    if (st != SPUTNIK_OK) {
       return st;
     }
   }
-  *out = amber_make_null(cx);
-  return AMBER_OK;
+  *out = sputnik_make_null(cx);
+  return SPUTNIK_OK;
 }
 
 /* Build a List of the current row's column values. */
-static AmberValue row_values(AmberCtx *cx, sqlite3_stmt *stmt) {
+static SputnikValue row_values(SputnikCtx *cx, sqlite3_stmt *stmt) {
   int n = sqlite3_column_count(stmt);
-  AmberValue small[64];
-  AmberValue *items = small;
+  SputnikValue small[64];
+  SputnikValue *items = small;
   if (n > 64) {
-    items = (AmberValue *)malloc(sizeof(AmberValue) * (size_t)n);
+    items = (SputnikValue *)malloc(sizeof(SputnikValue) * (size_t)n);
   }
   for (int i = 0; i < n; i++) {
     int t = sqlite3_column_type(stmt, i);
     if (t == SQLITE_NULL) {
-      items[i] = amber_make_null(cx);
+      items[i] = sputnik_make_null(cx);
     } else if (t == SQLITE_INTEGER) {
-      items[i] = amber_make_int(cx, sqlite3_column_int64(stmt, i));
+      items[i] = sputnik_make_int(cx, sqlite3_column_int64(stmt, i));
     } else if (t == SQLITE_FLOAT) {
-      items[i] = amber_make_float(cx, sqlite3_column_double(stmt, i));
+      items[i] = sputnik_make_float(cx, sqlite3_column_double(stmt, i));
     } else if (t == SQLITE_TEXT) {
       const char *p = (const char *)sqlite3_column_text(stmt, i);
       int len = sqlite3_column_bytes(stmt, i);
-      items[i] = amber_make_str(cx, p ? p : "", (size_t)(len < 0 ? 0 : len));
+      items[i] = sputnik_make_str(cx, p ? p : "", (size_t)(len < 0 ? 0 : len));
     } else { /* SQLITE_BLOB */
       const void *p = sqlite3_column_blob(stmt, i);
       int len = sqlite3_column_bytes(stmt, i);
       items[i] =
-          amber_make_bytes(cx, (const uint8_t *)p, (size_t)(len < 0 ? 0 : len));
+          sputnik_make_bytes(cx, (const uint8_t *)p, (size_t)(len < 0 ? 0 : len));
     }
   }
-  AmberValue list = amber_make_list(cx, items, (size_t)n);
+  SputnikValue list = sputnik_make_list(cx, items, (size_t)n);
   if (items != small) {
     free(items);
   }
@@ -1753,68 +1753,68 @@ static AmberValue row_values(AmberCtx *cx, sqlite3_stmt *stmt) {
 }
 
 /* rows() -> List of row-value Lists. Steps the statement to completion in one
- * native call (fewer round-trips than driving step() from Amber). */
-AmberStatus amsq_stmt_rows(AmberCtx *cx, AmberValue self, const AmberValue *args,
-                           size_t argc, AmberValue *out) {
+ * native call (fewer round-trips than driving step() from Sputnik). */
+SputnikStatus amsq_stmt_rows(SputnikCtx *cx, SputnikValue self, const SputnikValue *args,
+                           size_t argc, SputnikValue *out) {
   (void)args;
   (void)argc;
   sqlite3_stmt *stmt = live_stmt(cx, self);
   if (stmt == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   size_t cap = 16;
   size_t n = 0;
-  AmberValue *rows = (AmberValue *)malloc(cap * sizeof(AmberValue));
+  SputnikValue *rows = (SputnikValue *)malloc(cap * sizeof(SputnikValue));
   if (rows == NULL) {
-    return amber_fault(cx, "Sqlite3.Error", "out of memory");
+    return sputnik_fault(cx, "Sqlite3.Error", "out of memory");
   }
   int rc = 0;
   while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
     if (n == cap) {
       cap *= 2;
-      AmberValue *grown = (AmberValue *)realloc(rows, cap * sizeof(AmberValue));
+      SputnikValue *grown = (SputnikValue *)realloc(rows, cap * sizeof(SputnikValue));
       if (grown == NULL) {
         free(rows);
-        return amber_fault(cx, "Sqlite3.Error", "out of memory");
+        return sputnik_fault(cx, "Sqlite3.Error", "out of memory");
       }
       rows = grown;
     }
     rows[n++] = row_values(cx, stmt);
   }
   if (rc != SQLITE_DONE) {
-    AmberStatus st =
+    SputnikStatus st =
         fault_for_rc(cx, sqlite3_db_handle(stmt), rc, "Sqlite3.StepError");
     free(rows);
     return st;
   }
-  *out = amber_make_list(cx, rows, n);
+  *out = sputnik_make_list(cx, rows, n);
   free(rows);
-  return AMBER_OK;
+  return SPUTNIK_OK;
 }
 
 /* step() -> List (row values) on a row, or null when the statement is done. */
-AmberStatus amsq_stmt_step(AmberCtx *cx, AmberValue self, const AmberValue *args,
-                           size_t argc, AmberValue *out) {
+SputnikStatus amsq_stmt_step(SputnikCtx *cx, SputnikValue self, const SputnikValue *args,
+                           size_t argc, SputnikValue *out) {
   (void)args;
   (void)argc;
   sqlite3_stmt *stmt = live_stmt(cx, self);
   if (stmt == NULL) {
-    return AMBER_ERR;
+    return SPUTNIK_ERR;
   }
   int rc = sqlite3_step(stmt);
   if (rc == SQLITE_ROW) {
     *out = row_values(cx, stmt);
-    return AMBER_OK;
+    return SPUTNIK_OK;
   }
   if (rc == SQLITE_DONE) {
-    *out = amber_make_null(cx);
-    return AMBER_OK;
+    *out = sputnik_make_null(cx);
+    return SPUTNIK_OK;
   }
   return fault_for_rc(cx, sqlite3_db_handle(stmt), rc, "Sqlite3.StepError");
 }
 
-/* Note: amber_ext_abi_version() is intentionally NOT defined here. When this
- * package is built in-tree, the Amber runtime archive already provides that
+/* Note: sputnik_ext_abi_version() is intentionally NOT defined here. When this
+ * package is built in-tree, the Sputnik runtime archive already provides that
  * symbol; defining it again is a duplicate-symbol link error. A standalone
- * (out-of-tree) build against a prebuilt libamber would add it in its own
+ * (out-of-tree) build against a prebuilt libsputnik would add it in its own
  * shim. */

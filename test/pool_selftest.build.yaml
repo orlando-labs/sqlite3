@@ -1,4 +1,4 @@
-schema: amber.build.v1
+schema: sputnik.build.v1
 name: sqlite3.pool_selftest
 root: sqlite3.pool_selftest
 
@@ -9,9 +9,9 @@ profiles:
 
 modules:
   - name: sqlite3
-    path: ../src/sqlite3.am
+    path: ../src/sqlite3.s
   - name: sqlite3.pool_selftest
-    path: pool_selftest.am
+    path: pool_selftest.s
 
 native_extensions:
   - name: sqlite3

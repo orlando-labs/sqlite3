@@ -14,7 +14,7 @@ def check(score, condition):
 def main():
   score = 0
 
-  sqlite3.memory_pool(name: "sqlite3_amber_orm_pool", min_size: 1, max_size: 3) |pool|:
+  sqlite3.memory_pool(name: "sqlite3_sputnik_orm_pool", min_size: 1, max_size: 3) |pool|:
     pool.exec("create table users(id integer primary key, email text not null, age integer)")
 
     User = orm.model(name: :User, table: :users)

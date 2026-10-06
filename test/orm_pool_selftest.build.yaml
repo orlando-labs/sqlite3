@@ -1,4 +1,4 @@
-schema: amber.build.v1
+schema: sputnik.build.v1
 name: sqlite3.orm_pool_selftest
 root: sqlite3.orm_pool_selftest
 
@@ -9,19 +9,19 @@ profiles:
 
 modules:
   - name: sqlite3
-    path: ../src/sqlite3.am
+    path: ../src/sqlite3.s
   - name: orm
-    path: ../../amber-orm/src/orm.am
+    path: ../../sputnik-orm/src/orm.s
   - name: orm.pool
-    path: ../../amber-orm/src/orm/pool.am
+    path: ../../sputnik-orm/src/orm/pool.s
   - name: orm.sqlite3.adapter
-    path: ../../amber-orm/src/orm/sqlite3/adapter.am
+    path: ../../sputnik-orm/src/orm/sqlite3/adapter.s
   - name: orm.sqlite3.pool
-    path: ../../amber-orm/src/orm/sqlite3/pool.am
+    path: ../../sputnik-orm/src/orm/sqlite3/pool.s
   - name: orm.sqlite3
-    path: ../../amber-orm/src/orm/sqlite3.am
+    path: ../../sputnik-orm/src/orm/sqlite3.s
   - name: sqlite3.orm_pool_selftest
-    path: orm_pool_selftest.am
+    path: orm_pool_selftest.s
 
 native_extensions:
   - name: sqlite3

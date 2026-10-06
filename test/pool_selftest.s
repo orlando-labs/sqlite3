@@ -21,7 +21,7 @@ def main():
   score = 0
 
   sqlite3.memory_pool(
-    name: "sqlite3_amber_pool_selftest",
+    name: "sqlite3_sputnik_pool_selftest",
     min_size: 1,
     max_size: 3,
     checkout_timeout: 0.5,

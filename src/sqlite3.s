@@ -3,14 +3,14 @@ package sqlite3
 import task
 from sync import Mutex
 
-# sqlite3 — a native-only Amber package for SQLite databases.
+# sqlite3 — a native-only Sputnik package for SQLite databases.
 #
-# Architecture: the amber_ext ABI exposes only null/bool/int/float/str/bytes/
+# Architecture: the sputnik_ext ABI exposes only null/bool/int/float/str/bytes/
 # list + foreign handles, so the C leaves (native/sqlite3_ext.c) stay low-level
 # (SQL as Str, binds as a flat List, rows as Lists). Everything a user touches —
 # name-indifferent row Maps, named parameters, keyword arguments, transactions,
 # the convenience SQL builders, pooling policy, and the typed error surface —
-# is built here in Amber over small private native handles.
+# is built here in Sputnik over small private native handles.
 
 export open, connect, memory, pool, memory_pool
 export version, source_id, libversion_number, compile_options, features
@@ -267,7 +267,7 @@ def pool(path as (Str | fs.Path), mode: :create, uri: false, min_size: 0, max_si
 
 # Multiple `:memory:` connections are separate SQLite databases. This helper
 # deliberately chooses a named shared-cache URI so a real pool sees one DB.
-def memory_pool(name: "amber_pool", min_size: 1, max_size: 5, checkout_timeout: 5.0, idle_timeout: 60.0, max_lifetime: null, busy_timeout: null, pragmas: {}, &blk):
+def memory_pool(name: "sputnik_pool", min_size: 1, max_size: 5, checkout_timeout: 5.0, idle_timeout: 60.0, max_lifetime: null, busy_timeout: null, pragmas: {}, &blk):
   name_text = _text_of(name)
   raise ArgumentError("memory pool name must be a safe identifier") unless _valid_ident(name_text)
   path = "file:" + name_text + "?mode=memory&cache=shared"
@@ -314,7 +314,7 @@ class Pool:
     @checkout_timeout_ns = checkout_timeout_ns
     @pragmas = pragmas
     @min_size = min_size
-    # A scoped checkout belongs to the logical Amber task, not to a scheduler
+    # A scoped checkout belongs to the logical Sputnik task, not to a scheduler
     # worker. Exclusive leases must never be inherited by task.spawn children.
     @current_connection = task.local(inherit: false)
     @state_mutex = Mutex.new()
@@ -403,7 +403,7 @@ class Pool:
         @current_connection.with(tx):
           blk(tx)
 
-  # convenience query surface used by amber-orm -------------------------
+  # convenience query surface used by sputnik-orm -------------------------
   def insert(table, columns:, values:, returning: null):
     _with_executor_connection() |db|: db.insert(table, columns: columns, values: values, returning: returning)
   def insert_or_ignore(table, columns:, values:, returning: null):
@@ -682,7 +682,7 @@ class Database:
   def _savepoint_name(name):
     unless name:
       @savepoint_counter = @savepoint_counter + 1
-      return "amber_sp_" + @savepoint_counter.to_str
+      return "sputnik_sp_" + @savepoint_counter.to_str
     sp = _text_of(name)
     raise ArgumentError("savepoint name must be a safe SQL identifier: " + sp) unless _valid_ident(sp)
     sp

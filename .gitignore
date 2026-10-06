@@ -1,7 +1,7 @@
 # Build outputs
 /out/
 /cache/
-*.amberbc
+*.sputnikbc
 *.o
 *.a
 
