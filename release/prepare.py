@@ -30,6 +30,7 @@ def rewrite(text):
         return indent + kind + ' ' + new + tail
     text = re.sub(r'^(\s*)(package|from|import) ([\w.]+)([^\n]*)', line, text, flags=re.M)
     text = re.sub(r'(?m)(\bwhen )orm\.', r'\1slowpilot.orm.', text)
+    text = re.sub(r'(?m)(^class [^\n<]+< )orm\.', r'\1slowpilot.orm.', text)
     for old in ['Sqlite3', 'Orm', 'Orbit', 'Plot', 'Pycall', 'Rbcall']:
         text = re.sub(r'(?<![\w.])'+old+r'\.', 'Slowpilot.'+old+'.', text)
     return text
