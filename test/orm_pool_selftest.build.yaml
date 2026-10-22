@@ -11,15 +11,15 @@ modules:
   - name: sqlite3
     path: ../src/sqlite3.s
   - name: orm
-    path: ../../sputnik-orm/src/orm.s
+    path: ../../orm/src/orm.s
   - name: orm.pool
-    path: ../../sputnik-orm/src/orm/pool.s
+    path: ../../orm/src/orm/pool.s
   - name: orm.sqlite3.adapter
-    path: ../../sputnik-orm/src/orm/sqlite3/adapter.s
+    path: ../../orm/src/orm/sqlite3/adapter.s
   - name: orm.sqlite3.pool
-    path: ../../sputnik-orm/src/orm/sqlite3/pool.s
+    path: ../../orm/src/orm/sqlite3/pool.s
   - name: orm.sqlite3
-    path: ../../sputnik-orm/src/orm/sqlite3.s
+    path: ../../orm/src/orm/sqlite3.s
   - name: sqlite3.orm_pool_selftest
     path: orm_pool_selftest.s
 

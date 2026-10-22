@@ -89,7 +89,7 @@ sputnik build your.build.yaml --target native --require-full-native \
 ./out/your.root.module
 ```
 
-The core, pool, concurrent example, and `sputnik-orm` integration graphs all pass
+The core, pool, concurrent example, and `orm` integration graphs all pass
 the strict full-native gate with zero fallback code objects. Pool contention is
 declared as blocking FFI: the common checkout stays on the nonblocking fast
 path, while an exhausted pool waits on a native condition through Sputnik's
@@ -188,7 +188,7 @@ The core self-test ([`test/selftest.s`](test/selftest.s)) exercises 35
 end-to-end behaviours. [`test/pool_selftest.s`](test/pool_selftest.s) adds
 concurrent tasks, timeout, scoped leases, cleanup, and maintenance checks;
 [`test/orm_pool_selftest.s`](test/orm_pool_selftest.s) verifies direct
-`sputnik-orm` integration and task-local transactional routing.
+`orm` integration and task-local transactional routing.
 
 ## Pool API and concurrency model
 
@@ -257,7 +257,7 @@ sqlite3.memory_pool(name: "request_tests", max_size: 4) |pool|:
   ...
 ```
 
-### `sputnik-orm` / web-framework boundary
+### `orm` / web-framework boundary
 
 `Pool` intentionally implements the same small executor surface as `Database`,
 so the existing adapter can consume it directly:
@@ -307,7 +307,7 @@ native/sqlite3.c/.h     vendored SQLite amalgamation (3.51.0, public domain)
 test/selftest.s        end-to-end conformance test (returns 35)
 test/selftest.build.yaml  build manifest for the self-test
 test/pool_selftest.s   pool concurrency/lifecycle test (returns 18)
-test/orm_pool_selftest.s  sputnik-orm pool integration test (returns 4)
+test/orm_pool_selftest.s  orm pool integration test (returns 4)
 examples/basic.s       a small usage example
 examples/pool.s        concurrent pool + scoped transaction example
 ```

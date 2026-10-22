@@ -405,7 +405,7 @@ class Pool:
         @current_connection.with(tx):
           blk(tx)
 
-  # convenience query surface used by sputnik-orm -------------------------
+  # convenience query surface used by orm -------------------------
   def insert(table, columns:, values:, returning: null):
     _with_executor_connection() |db|: db.insert(table, columns: columns, values: values, returning: returning)
   def insert_or_ignore(table, columns:, values:, returning: null):
