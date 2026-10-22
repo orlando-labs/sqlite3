@@ -7,3 +7,11 @@
 
 # macOS
 .DS_Store
+
+build/
+out/
+.sputnik/
+__pycache__/
+*.dSYM/
+*.sputnikpkg
+*.publish-*.json

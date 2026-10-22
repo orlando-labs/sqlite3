@@ -47,6 +47,14 @@ sqlite3.pool("data/app.db", min_size: 1, max_size: 10) |pool|:
 
 ## Architecture
 
+Online backups use `source.backup_into(destination, timeout: 30.0)`, where both
+arguments are separately opened `Database` objects outside transactions. The
+method copies SQLite's consistent snapshot, including committed WAL contents,
+without copying live database files. It retries BUSY/LOCKED within the deadline
+and observes task cancellation. The caller manages destination creation, private
+permissions and file/directory durability. Same-connection and transactional
+backups raise `TransactionError`; see `test/backup_selftest.s`.
+
 The `sputnik_ext` ABI exposes only `null`/`Bool`/`Int`/`Float`/`Str`/`Bytes`/`List`
 plus opaque foreign handles — no maps, no symbols, no keyword arguments. So the C
 side ([`native/sqlite3_ext.c`](native/sqlite3_ext.c)) is a thin set of low-level
@@ -90,6 +98,12 @@ not retain the serialized runtime bridge lock.
 
 Capabilities: the package requires the `ffi.v1` profile feature (it links C).
 Opening a database additionally uses `db`/`fs` host grants at runtime (design §11).
+
+Sputnik Notebook can load the C leaves as a prepared native dependency while
+evaluating the public Sputnik API in its isolated worker. The sibling
+[`SQLite / Data Table example`](../sputnik-notebook/docs/engineering/notebook-sqlite-example.md)
+includes preparation, a read-only external database connection, bound queries
+and SQL pagination. No database contents are copied into the notebook.
 
 ## What's implemented
 

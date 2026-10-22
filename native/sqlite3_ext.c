@@ -1,3 +1,6 @@
+#ifndef SPUTNIK_SQLITE3_ERROR_NAMESPACE
+#define SPUTNIK_SQLITE3_ERROR_NAMESPACE "Sqlite3"
+#endif
 /*
  * sqlite3_ext.c — native leaves for the Sputnik `sqlite3` package.
  *
@@ -19,6 +22,10 @@
  *   sqlite3.PoolCore  -> struct PoolCore  (shared pool state)   collected
  *   sqlite3.LeaseConn -> struct LeaseConn (checked pool view)   collected
  */
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "runtime/sputnik_ext.h"
 
 #include "sqlite3.h"
@@ -104,28 +111,28 @@ static const char kLeaseConnTag[] = "sqlite3.LeaseConn";
 static const char *error_class_for_rc(int rc) {
   switch (rc & 0xff) {
   case SQLITE_BUSY:
-    return "Sqlite3.BusyError";
+    return SPUTNIK_SQLITE3_ERROR_NAMESPACE ".BusyError";
   case SQLITE_LOCKED:
-    return "Sqlite3.LockedError";
+    return SPUTNIK_SQLITE3_ERROR_NAMESPACE ".LockedError";
   case SQLITE_CONSTRAINT:
-    return "Sqlite3.ConstraintError";
+    return SPUTNIK_SQLITE3_ERROR_NAMESPACE ".ConstraintError";
   case SQLITE_READONLY:
-    return "Sqlite3.ReadOnlyError";
+    return SPUTNIK_SQLITE3_ERROR_NAMESPACE ".ReadOnlyError";
   case SQLITE_RANGE:
-    return "Sqlite3.RangeError";
+    return SPUTNIK_SQLITE3_ERROR_NAMESPACE ".RangeError";
   case SQLITE_MISUSE:
-    return "Sqlite3.MisuseError";
+    return SPUTNIK_SQLITE3_ERROR_NAMESPACE ".MisuseError";
   case SQLITE_INTERRUPT:
-    return "Sqlite3.InterruptError";
+    return SPUTNIK_SQLITE3_ERROR_NAMESPACE ".InterruptError";
   case SQLITE_CORRUPT:
-    return "Sqlite3.CorruptError";
+    return SPUTNIK_SQLITE3_ERROR_NAMESPACE ".CorruptError";
   default:
     return NULL;
   }
 }
 
 /* Record a fault for `rc`, preferring the specific class, else the phase parent
- * ("Sqlite3.OpenError" / ".PrepareError" / ".BindError" / ".StepError"). */
+ * (SPUTNIK_SQLITE3_ERROR_NAMESPACE ".OpenError" / ".PrepareError" / ".BindError" / ".StepError"). */
 static SputnikStatus fault_for_rc(SputnikCtx *cx, sqlite3 *db, int rc,
                                 const char *phase_class) {
   const char *cls = error_class_for_rc(rc);
@@ -320,7 +327,7 @@ SputnikStatus amsq_conn_open(SputnikCtx *cx, const SputnikValue *args, size_t ar
   }
   char *path_z = (char *)malloc(path_len + 1);
   if (path_z == NULL) {
-    return sputnik_fault(cx, "Sqlite3.OpenError", "out of memory");
+    return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".OpenError", "out of memory");
   }
   memcpy(path_z, path, path_len);
   path_z[path_len] = '\0';
@@ -329,7 +336,7 @@ SputnikStatus amsq_conn_open(SputnikCtx *cx, const SputnikValue *args, size_t ar
   int rc = sqlite3_open_v2(path_z, &db, (int)flags, NULL);
   free(path_z);
   if (rc != SQLITE_OK) {
-    SputnikStatus st = fault_for_rc(cx, db, rc, "Sqlite3.OpenError");
+    SputnikStatus st = fault_for_rc(cx, db, rc, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".OpenError");
     sqlite3_close_v2(db);
     return st;
   }
@@ -340,7 +347,7 @@ SputnikStatus amsq_conn_open(SputnikCtx *cx, const SputnikValue *args, size_t ar
   Conn *conn = conn_box_new(db);
   if (conn == NULL) {
     sqlite3_close_v2(db);
-    return sputnik_fault(cx, "Sqlite3.OpenError", "out of memory");
+    return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".OpenError", "out of memory");
   }
   *out = sputnik_make_handle(cx, kConnTag, conn);
   return SPUTNIK_OK;
@@ -362,13 +369,13 @@ static Conn *conn_of(SputnikCtx *cx, SputnikValue self) {
   if (magic == AMSQ_LEASE_MAGIC) {
     LeaseConn *lease = (LeaseConn *)p;
     if (lease->released || lease->conn == NULL || lease->pool == NULL) {
-      sputnik_fault(cx, "Sqlite3.PoolLeaseError",
+      sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".PoolLeaseError",
                   "the pooled connection lease has been released");
       return NULL;
     }
     if (!lease->conn->leased ||
         lease->conn->generation != lease->connection_generation) {
-      sputnik_fault(cx, "Sqlite3.PoolLeaseError",
+      sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".PoolLeaseError",
                   "the pooled connection no longer belongs to this lease");
       return NULL;
     }
@@ -456,6 +463,42 @@ SputnikStatus amsq_conn_filename(SputnikCtx *cx, SputnikValue self,
     name = "";
   }
   *out = sputnik_make_str(cx, name, strlen(name));
+  return SPUTNIK_OK;
+}
+
+SputnikStatus amsq_conn_backup(SputnikCtx *cx, SputnikValue self,
+                               const SputnikValue *args, size_t argc,
+                               SputnikValue *out) {
+  sqlite3 *source = live_db(cx, self);
+  if (!source) return SPUTNIK_ERR;
+  if (argc != 2) return sputnik_fault(cx, "ArgumentError", "backup expects destination and timeout");
+  sqlite3 *destination = live_db(cx, args[0]);
+  if (!destination) return SPUTNIK_ERR;
+  int64_t timeout_ms;
+  if (!arg_int(cx, args, argc, 1, &timeout_ms) || timeout_ms < 0 ||
+      timeout_ms > INT64_C(86400000))
+    return sputnik_fault(cx, "ArgumentError", "backup timeout must be 0..86400 seconds");
+  if (source == destination || !sqlite3_get_autocommit(source) ||
+      !sqlite3_get_autocommit(destination))
+    return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".TransactionError", "backup needs distinct connections outside transactions");
+  sqlite3_backup *backup = sqlite3_backup_init(destination, "main", source, "main");
+  if (!backup) return fault_for_rc(cx, destination, sqlite3_errcode(destination), SPUTNIK_SQLITE3_ERROR_NAMESPACE ".StepError");
+  const int64_t deadline = monotonic_ns() + timeout_ms * INT64_C(1000000);
+  int rc;
+  do {
+    if (sputnik_task_cancelled(cx)) { rc = SQLITE_INTERRUPT; break; }
+    rc = sqlite3_backup_step(backup, 128);
+    if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) {
+      struct timespec pause = {0, 10000000};
+      nanosleep(&pause, NULL);
+    }
+  } while ((rc == SQLITE_OK || rc == SQLITE_BUSY || rc == SQLITE_LOCKED) &&
+           monotonic_ns() < deadline);
+  const int finished = sqlite3_backup_finish(backup);
+  if (rc != SQLITE_DONE)
+    return fault_for_rc(cx, NULL, rc == SQLITE_OK ? SQLITE_BUSY : rc, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".StepError");
+  if (finished != SQLITE_OK) return fault_for_rc(cx, destination, finished, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".StepError");
+  *out = sputnik_make_null(cx);
   return SPUTNIK_OK;
 }
 
@@ -593,7 +636,7 @@ static SputnikStatus reject_file_escape(SputnikCtx *cx, const char *sql,
                                       size_t len) {
   if (begins_with_keyword(sql, len, "ATTACH") ||
       begins_with_keyword(sql, len, "DETACH")) {
-    return sputnik_fault(cx, "Sqlite3.MisuseError",
+    return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".MisuseError",
                        "ATTACH/DETACH is not permitted (a future attach() API "
                        "will add explicit capability checks)");
   }
@@ -602,7 +645,7 @@ static SputnikStatus reject_file_escape(SputnikCtx *cx, const char *sql,
       char a = sql[i], b = sql[i + 1], c = sql[i + 2], d = sql[i + 3];
       if ((a == 'I' || a == 'i') && (b == 'N' || b == 'n') &&
           (c == 'T' || c == 't') && (d == 'O' || d == 'o')) {
-        return sputnik_fault(cx, "Sqlite3.MisuseError",
+        return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".MisuseError",
                            "VACUUM INTO is not permitted (a future "
                            "vacuum_into() API will add capability checks)");
       }
@@ -631,7 +674,7 @@ SputnikStatus amsq_conn_exec(SputnikCtx *cx, SputnikValue self, const SputnikVal
   if (rc != SQLITE_OK) {
     const char *cls = error_class_for_rc(rc);
     if (cls == NULL) {
-      cls = "Sqlite3.StepError";
+      cls = SPUTNIK_SQLITE3_ERROR_NAMESPACE ".StepError";
     }
     SputnikStatus st =
         sputnik_fault(cx, cls, errmsg != NULL ? errmsg : sqlite3_errstr(rc));
@@ -668,10 +711,10 @@ SputnikStatus amsq_conn_prepare(SputnikCtx *cx, SputnikValue self,
   const char *tail = NULL;
   int rc = sqlite3_prepare_v3(db, sql, (int)sql_len, 0, &stmt, &tail);
   if (rc != SQLITE_OK) {
-    return fault_for_rc(cx, db, rc, "Sqlite3.PrepareError");
+    return fault_for_rc(cx, db, rc, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".PrepareError");
   }
   if (stmt == NULL) {
-    return sputnik_fault(cx, "Sqlite3.PrepareError",
+    return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".PrepareError",
                        "no statement to prepare (empty SQL)");
   }
   if (tail != NULL) {
@@ -683,7 +726,7 @@ SputnikStatus amsq_conn_prepare(SputnikCtx *cx, SputnikValue self,
     }
     if (p < end) {
       sqlite3_finalize(stmt);
-      return sputnik_fault(cx, "Sqlite3.PrepareError",
+      return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".PrepareError",
                          "trailing SQL after the first statement is not "
                          "allowed here (use exec for multi-statement scripts)");
     }
@@ -691,7 +734,7 @@ SputnikStatus amsq_conn_prepare(SputnikCtx *cx, SputnikValue self,
   Stmt *box = (Stmt *)calloc(1, sizeof(Stmt));
   if (box == NULL) {
     sqlite3_finalize(stmt);
-    return sputnik_fault(cx, "Sqlite3.PrepareError", "out of memory");
+    return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".PrepareError", "out of memory");
   }
   box->stmt = stmt;
   box->conn = conn_of(cx, self);
@@ -810,7 +853,7 @@ static Conn *pool_open_conn(SputnikCtx *cx, PoolCore *pool) {
   sqlite3 *db = NULL;
   int rc = sqlite3_open_v2(pool->path, &db, pool->flags, NULL);
   if (rc != SQLITE_OK) {
-    fault_for_rc(cx, db, rc, "Sqlite3.OpenError");
+    fault_for_rc(cx, db, rc, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".OpenError");
     sqlite3_close_v2(db);
     return NULL;
   }
@@ -821,7 +864,7 @@ static Conn *pool_open_conn(SputnikCtx *cx, PoolCore *pool) {
   Conn *conn = conn_box_new(db);
   if (conn == NULL) {
     sqlite3_close_v2(db);
-    sputnik_fault(cx, "Sqlite3.OpenError", "out of memory");
+    sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".OpenError", "out of memory");
     return NULL;
   }
   conn->pool = pool;
@@ -1024,12 +1067,12 @@ SputnikStatus amsq_pool_core_new(SputnikCtx *cx, const SputnikValue *args,
   }
   PoolCore *pool = (PoolCore *)calloc(1, sizeof(PoolCore));
   if (pool == NULL) {
-    return sputnik_fault(cx, "Sqlite3.PoolError", "out of memory");
+    return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".PoolError", "out of memory");
   }
   pool->path = (char *)malloc(path_len + 1);
   if (pool->path == NULL) {
     free(pool);
-    return sputnik_fault(cx, "Sqlite3.PoolError", "out of memory");
+    return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".PoolError", "out of memory");
   }
   memcpy(pool->path, path, path_len);
   pool->path[path_len] = '\0';
@@ -1037,14 +1080,14 @@ SputnikStatus amsq_pool_core_new(SputnikCtx *cx, const SputnikValue *args,
   if (pool->mutex == NULL) {
     free(pool->path);
     free(pool);
-    return sputnik_fault(cx, "Sqlite3.PoolError",
+    return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".PoolError",
                        "SQLite mutex support is unavailable");
   }
   if (pthread_mutex_init(&pool->wait_mutex, NULL) != 0) {
     sqlite3_mutex_free(pool->mutex);
     free(pool->path);
     free(pool);
-    return sputnik_fault(cx, "Sqlite3.PoolError",
+    return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".PoolError",
                        "could not initialize pool wait mutex");
   }
   if (pthread_cond_init(&pool->wait_cond, NULL) != 0) {
@@ -1052,7 +1095,7 @@ SputnikStatus amsq_pool_core_new(SputnikCtx *cx, const SputnikValue *args,
     sqlite3_mutex_free(pool->mutex);
     free(pool->path);
     free(pool);
-    return sputnik_fault(cx, "Sqlite3.PoolError",
+    return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".PoolError",
                        "could not initialize pool wait condition");
   }
   pool->wait_initialized = 1;
@@ -1097,7 +1140,7 @@ SputnikStatus amsq_pool_try_acquire(SputnikCtx *cx, SputnikValue self,
   pool_lock(pool);
   if (pool->closed) {
     pool_unlock(pool);
-    return sputnik_fault(cx, "Sqlite3.PoolClosedError",
+    return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".PoolClosedError",
                        "connection pool is closed");
   }
   pool_prune_locked(pool, now);
@@ -1147,7 +1190,7 @@ SputnikStatus amsq_pool_try_acquire(SputnikCtx *cx, SputnikValue self,
     if (conn != NULL) {
       conn_box_free(conn);
     }
-    return sputnik_fault(cx, "Sqlite3.PoolError", "out of memory");
+    return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".PoolError", "out of memory");
   }
 
   pool_lock(pool);
@@ -1170,8 +1213,8 @@ SputnikStatus amsq_pool_try_acquire(SputnikCtx *cx, SputnikValue self,
 
 /* Blocking half of pool checkout. Sputnik first calls try_acquire so the common
  * uncontended path never enters the executor. Once capacity is exhausted this
- * thunk waits on the native pool condition; its logical symbol is declared in
- * `blocking_symbols`, so a VM strand is parked and no RuntimeWorld bridge lock
+ * thunk waits on the native pool condition; its Sputnik declaration has the
+ * `blocking` modifier, so a VM strand is parked and no RuntimeWorld bridge lock
  * is retained while the OS thread sleeps. */
 SputnikStatus amsq_pool_acquire_wait(SputnikCtx *cx, SputnikValue self,
                                    const SputnikValue *args, size_t argc,
@@ -1214,7 +1257,7 @@ SputnikStatus amsq_pool_acquire_wait(SputnikCtx *cx, SputnikValue self,
       const int64_t remaining = timeout_ns - elapsed;
       if (remaining <= 0) {
         pool_waiter_change(pool, -1);
-        return sputnik_fault(cx, "Sqlite3.PoolTimeoutError",
+        return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".PoolTimeoutError",
                            "timed out waiting for a database connection");
       }
       if (remaining < wait_ns) {
@@ -1249,7 +1292,7 @@ SputnikStatus amsq_pool_release(SputnikCtx *cx, SputnikValue self,
     return SPUTNIK_ERR;
   }
   if (lease->pool != NULL && lease->pool != pool) {
-    return sputnik_fault(cx, "Sqlite3.PoolLeaseError",
+    return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".PoolLeaseError",
                        "lease belongs to a different connection pool");
   }
   int waiting_count = lease_finish(lease, discard);
@@ -1499,7 +1542,7 @@ SputnikStatus amsq_stmt_column_names(SputnikCtx *cx, SputnikValue self,
   if (n > 0) {
     items = (SputnikValue *)malloc(sizeof(SputnikValue) * (size_t)n);
     if (items == NULL) {
-      return sputnik_fault(cx, "Sqlite3.Error", "out of memory");
+      return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".Error", "out of memory");
     }
   }
   for (int i = 0; i < n; i++) {
@@ -1684,7 +1727,7 @@ static SputnikStatus bind_one(SputnikCtx *cx, sqlite3 *db, sqlite3_stmt *stmt,
                        "Float, Str, or Bytes)");
   }
   if (rc != SQLITE_OK) {
-    return fault_for_rc(cx, db, rc, "Sqlite3.BindError");
+    return fault_for_rc(cx, db, rc, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".BindError");
   }
   return SPUTNIK_OK;
 }
@@ -1704,7 +1747,7 @@ SputnikStatus amsq_stmt_bind(SputnikCtx *cx, SputnikValue self, const SputnikVal
   size_t count = sputnik_list_len(cx, args[0]);
   int expected = sqlite3_bind_parameter_count(stmt);
   if ((int)count != expected) {
-    return sputnik_fault(cx, "Sqlite3.BindError",
+    return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".BindError",
                        "wrong number of bind values for statement");
   }
   for (size_t i = 0; i < count; i++) {
@@ -1766,7 +1809,7 @@ SputnikStatus amsq_stmt_rows(SputnikCtx *cx, SputnikValue self, const SputnikVal
   size_t n = 0;
   SputnikValue *rows = (SputnikValue *)malloc(cap * sizeof(SputnikValue));
   if (rows == NULL) {
-    return sputnik_fault(cx, "Sqlite3.Error", "out of memory");
+    return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".Error", "out of memory");
   }
   int rc = 0;
   while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
@@ -1775,7 +1818,7 @@ SputnikStatus amsq_stmt_rows(SputnikCtx *cx, SputnikValue self, const SputnikVal
       SputnikValue *grown = (SputnikValue *)realloc(rows, cap * sizeof(SputnikValue));
       if (grown == NULL) {
         free(rows);
-        return sputnik_fault(cx, "Sqlite3.Error", "out of memory");
+        return sputnik_fault(cx, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".Error", "out of memory");
       }
       rows = grown;
     }
@@ -1783,7 +1826,7 @@ SputnikStatus amsq_stmt_rows(SputnikCtx *cx, SputnikValue self, const SputnikVal
   }
   if (rc != SQLITE_DONE) {
     SputnikStatus st =
-        fault_for_rc(cx, sqlite3_db_handle(stmt), rc, "Sqlite3.StepError");
+        fault_for_rc(cx, sqlite3_db_handle(stmt), rc, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".StepError");
     free(rows);
     return st;
   }
@@ -1810,7 +1853,7 @@ SputnikStatus amsq_stmt_step(SputnikCtx *cx, SputnikValue self, const SputnikVal
     *out = sputnik_make_null(cx);
     return SPUTNIK_OK;
   }
-  return fault_for_rc(cx, sqlite3_db_handle(stmt), rc, "Sqlite3.StepError");
+  return fault_for_rc(cx, sqlite3_db_handle(stmt), rc, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".StepError");
 }
 
 /* Note: sputnik_ext_abi_version() is intentionally NOT defined here. When this

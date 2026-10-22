@@ -31,8 +31,6 @@ native_extensions:
       - ../native/sqlite3.c
     headers:
       - ../native/sqlite3.h
-    blocking_symbols:
-      - amsq_pool_acquire_wait
     defines:
       - SQLITE_THREADSAFE=1
       - SQLITE_ENABLE_COLUMN_METADATA=1

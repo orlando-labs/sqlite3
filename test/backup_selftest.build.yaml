@@ -1,0 +1,24 @@
+schema: sputnik.build.v1
+name: backup_selftest
+root: sqlite3.backup_selftest
+profiles:
+  required: [core.v1, ffi.v1, macro.v1]
+  optional: []
+  forbidden: []
+modules:
+  - name: sqlite3
+    path: ../src/sqlite3.s
+  - name: sqlite3.backup_selftest
+    path: backup_selftest.s
+native_extensions:
+  - name: sqlite3
+    language: c
+    sources:
+      - ../native/sqlite3_ext.c
+      - ../native/sqlite3.c
+    headers:
+      - ../native/sqlite3.h
+    defines:
+      - SQLITE_THREADSAFE=1
+      - SQLITE_DQS=0
+      - SQLITE_OMIT_LOAD_EXTENSION=1

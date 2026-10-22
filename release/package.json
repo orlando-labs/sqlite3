@@ -1,0 +1,30 @@
+{
+  "name": "sqlite3",
+  "version": "0.1.0",
+  "root": "sqlite3",
+  "sources": [
+    "src/*.s"
+  ],
+  "native": [
+    {
+      "name": "sqlite3",
+      "language": "c",
+      "sources": [
+        "native/sqlite3_ext.c",
+        "native/sqlite3.c"
+      ],
+      "headers": [
+        "native/sqlite3.h"
+      ],
+      "defines": [
+        "SQLITE_THREADSAFE=1",
+        "SQLITE_ENABLE_COLUMN_METADATA=1",
+        "SQLITE_ENABLE_FTS5=1",
+        "SQLITE_ENABLE_JSON1=1",
+        "SQLITE_DQS=0",
+        "SQLITE_OMIT_LOAD_EXTENSION=1",
+        "SPUTNIK_SQLITE3_ERROR_NAMESPACE=\"Slowpilot.Sqlite3\""
+      ]
+    }
+  ]
+}

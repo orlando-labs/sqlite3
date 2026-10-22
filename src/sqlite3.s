@@ -69,6 +69,7 @@ native class Conn from "sqlite3.Conn" owned:
   def _exec(sql as Str) from "amsq_conn_exec"
   def _prepare(sql as Str) from "amsq_conn_prepare"
   def _probe(sql as Str) -> Bool from "amsq_conn_probe"
+  def _backup_into(destination, timeout_ms as Int) from "amsq_conn_backup" blocking
 
 # A raw prepared-statement handle. Produced by Conn#_prepare, wrapped by
 # Statement; never constructed directly, so it declares no init.
@@ -96,7 +97,7 @@ native class PoolCore from "sqlite3.PoolCore" collected:
   def init(path_text as Str, flags as Int, busy_ms as Int, min_size as Int, max_size as Int, idle_timeout_ns as Int, max_lifetime_ns as Int) from "amsq_pool_core_new"
   def destroy!() from "amsq_pool_core_free"
   def _try_acquire() from "amsq_pool_try_acquire"
-  def _acquire_wait(timeout_ns as Int) from "amsq_pool_acquire_wait"
+  def _acquire_wait(timeout_ns as Int) from "amsq_pool_acquire_wait" blocking
   # Returns -1 for an already-finished lease, otherwise the number of waiters
   # observed after returning/discarding the connection.
   def _release(conn, discard as Bool) -> Int from "amsq_pool_release"
@@ -124,6 +125,7 @@ native class LeaseConn from "sqlite3.LeaseConn" collected:
   def _exec(sql as Str) from "amsq_conn_exec"
   def _prepare(sql as Str) from "amsq_conn_prepare"
   def _probe(sql as Str) -> Bool from "amsq_conn_probe"
+  def _backup_into(destination, timeout_ms as Int) from "amsq_conn_backup" blocking
 
 # ---------------------------------------------------------- typed SQL values
 
@@ -292,7 +294,7 @@ class PoolLease:
   def init(@core, @raw, @database)
 
   def db():
-    raise Sqlite3.PoolLeaseError("the connection lease has been released") if released?()
+    raise PoolLeaseError("the connection lease has been released") if released?()
     @database
 
   def _raw():
@@ -345,7 +347,7 @@ class Pool:
     result = @core._try_acquire()
     return _lease_from_result(result) if result
     if timeout_ns == 0:
-      raise Sqlite3.PoolTimeoutError("timed out waiting for a database connection")
+      raise PoolTimeoutError("timed out waiting for a database connection")
     _lease_from_result(@core._acquire_wait(timeout_ns))
 
   def checkout(timeout: null, &blk):
@@ -391,7 +393,7 @@ class Pool:
       db.each_array(sql, params: params) |row|:
         blk(row)
   def prepare(sql, &blk):
-    raise Sqlite3.PoolLeaseError("Pool#prepare requires a block so the statement cannot outlive its lease") unless blk
+    raise PoolLeaseError("Pool#prepare requires a block so the statement cannot outlive its lease") unless blk
     _with_executor_connection() |db|:
       db.prepare(sql) |statement|:
         blk(statement)
@@ -462,7 +464,7 @@ class Pool:
     started = Time.monotonic
     while stats()[:leased] > 0:
       if timeout_ns >= 0 and (Time.monotonic - started).total_nanoseconds >= timeout_ns:
-        raise Sqlite3.PoolTimeoutError("timed out draining leased database connections")
+        raise PoolTimeoutError("timed out draining leased database connections")
       task.sleep(0.001)
     null
 
@@ -478,7 +480,7 @@ class Pool:
     try:
       while leases.count < @min_size:
         result = @core._try_acquire()
-        raise Sqlite3.PoolError("could not warm the configured minimum pool size") unless result
+        raise PoolError("could not warm the configured minimum pool size") unless result
         leases.push!(_lease_from_result(result))
     ensure:
       leases.each |lease|:
@@ -563,6 +565,14 @@ class Database:
     @conn._interrupt()
     null
 
+  # Online SQLite backup into a separately opened destination connection.
+  # Destination must not be in a transaction; timeout includes BUSY retries.
+  def backup_into(destination, timeout: 30.0):
+    @conn._backup_into(destination._backup_connection(), _busy_ms(timeout))
+    destination
+
+  def _backup_connection(): @conn
+
   # direct execution ------------------------------------------------------
   def exec(sql):
     text = case sql:
@@ -636,7 +646,7 @@ class Database:
 
   # transactions ----------------------------------------------------------
   def begin!(mode: :deferred):
-    raise Sqlite3.TransactionError("already in a transaction; use transaction or savepoint for nesting") if @conn._in_transaction?
+    raise TransactionError("already in a transaction; use transaction or savepoint for nesting") if @conn._in_transaction?
     _exec_sql(_begin_sql(mode))
     self
   def commit!():
@@ -650,7 +660,7 @@ class Database:
     raise ArgumentError("transaction requires a block") unless blk
     if @conn._in_transaction?:
       if mode != :deferred:
-        raise Sqlite3.TransactionError("a nested transaction must use mode: :deferred (savepoints cannot upgrade the outer mode)")
+        raise TransactionError("a nested transaction must use mode: :deferred (savepoints cannot upgrade the outer mode)")
       return savepoint(&blk)
     _exec_sql(_begin_sql(mode))
     committed = false
@@ -690,7 +700,7 @@ class Database:
   def _safe_exec(sql):
     try:
       _exec_sql(sql)
-    rescue Sqlite3.Error |e|:
+    rescue Error |e|:
       null
 
   # pragmas ---------------------------------------------------------------
@@ -851,7 +861,7 @@ class Statement:
     first = @stmt._step!()
     if first:
       @stmt._reset!()
-      raise Sqlite3.StepError("execute: statement returned rows; use query, query_one, or scalar")
+      raise StepError("execute: statement returned rows; use query, query_one, or scalar")
     @stmt._reset!()
     _command_result(@db)
 
