@@ -137,6 +137,17 @@ class SqlFragment:
   def params():
     @fragment_params
 
+  class_method def from_template(parts):
+    query = ""
+    params = []
+    parts.each |(is_text, value)|:
+      if is_text:
+        query = query + value
+      else:
+        query = query + "?"
+        params.push!(value)
+    SqlFragment(query, params)
+
 # A validated (already-quoted) SQL identifier marker.
 class SqlIdent:
   def init(@ident_sql)
@@ -179,19 +190,25 @@ def features():
 def fragment(text as Str, params = []):
   SqlFragment(text, params)
 
-string_tag macro def sql(t as Ast.StringTemplate):
-  query = ""
-  params = []
-  t.parts.each |part|:
-    if part.kind == "AstStringText":
-      query = query + part.value
-    elif part.kind == "AstStringExpr":
-      query = query + "?"
-      params.push!(part.expr)
+macro def _sql_template_parts(parts):
+  result = []
+  parts.each |part|:
+    if part.kind == "AstStringFor":
+      result.push!(Ast.node("AstStringFor", {iteration: part.iteration, parts: _sql_template_parts(part.parts)}))
     else:
-      raise ValueError("unsupported SQL template part: " + part.kind)
-  return quote:
-    sqlite3.fragment(#{Ast.lift(query)}, #{Ast.node("AstListLiteral", {elements: params})})
+      is_text = part.kind != "AstStringExpr"
+      value = if is_text then Ast.lift(part.value) else part.expr
+      result.push!(Ast.node("AstTupleLiteral", {elements: [Ast.lift(is_text), value]}))
+  return result
+
+string_tag macro def sql(t as Ast.StringTemplate):
+  fragment_type = Ast.node("AstQualifiedRef", {module: "sqlite3", name: "SqlFragment"})
+  finish = quote:
+    #{fragment_type}.from_template
+  return Ast.node("AstTemplateRender", {
+    parts: _sql_template_parts(t.parts),
+    finish: finish
+  })
 
 def ident(name):
   SqlIdent(_render_ident(name))
@@ -405,6 +422,17 @@ class Pool:
         @current_connection.with(tx):
           blk(tx)
 
+  # A rollback request must use an existing task-local lease, never a fresh one.
+  def rollback():
+    raise TransactionError("rollback requires an active transaction in this task") unless @current_connection.bound?()
+    @current_connection.get().rollback()
+
+  def in_transaction?():
+    @current_connection.bound?() and @current_connection.get().in_transaction?()
+
+  def rollback_only?():
+    @current_connection.bound?() and @current_connection.get().rollback_only?()
+
   # convenience query surface used by orm -------------------------
   def insert(table, columns:, values:, returning: null):
     _with_executor_connection() |db|: db.insert(table, columns: columns, values: values, returning: returning)
@@ -511,6 +539,7 @@ class Database:
     @pooled = pooled
     @savepoint_counter = 0
     @query_instrumenter = null
+    @current_transaction = task.local(inherit: false)
 
   def instrument_queries!(instrumenter):
     @query_instrumenter = instrumenter
@@ -656,38 +685,68 @@ class Database:
     _exec_sql("ROLLBACK")
     self
 
+  # Mark only the innermost managed boundary. SQL remains inside that boundary
+  # until it exits, even if the caller continues executing after this request.
+  def rollback():
+    raise TransactionError("rollback requires an active transaction in this task") unless @current_transaction.bound?()
+    @current_transaction.get()[:rollback] = true
+    null
+
+  def rollback_only?():
+    @current_transaction.bound?() and @current_transaction.get()[:rollback]
+
+  def transaction_mode():
+    return null unless @current_transaction.bound?()
+    @current_transaction.get()[:mode]
+
   def transaction(mode: :deferred, &blk):
     raise ArgumentError("transaction requires a block") unless blk
     if @conn._in_transaction?:
-      if mode != :deferred:
-        raise TransactionError("a nested transaction must use mode: :deferred (savepoints cannot upgrade the outer mode)")
+      # A savepoint cannot upgrade a deferred/manual transaction to a writer.
+      # Reusing an already acquired writer reservation is safe.
+      if mode != :deferred and not (mode == :immediate and [:immediate, :exclusive].include?(transaction_mode())):
+        raise TransactionError("savepoints cannot upgrade the outer transaction mode")
       return savepoint(&blk)
     _exec_sql(_begin_sql(mode))
-    committed = false
-    try:
-      result = blk(self)
-      _exec_sql("COMMIT")
-      committed = true
-      result
-    ensure:
-      if not committed:
-        _safe_exec("ROLLBACK")
+    _transaction_scope(mode, null, &blk)
 
   def savepoint(name: null, &blk):
     raise ArgumentError("savepoint requires a block") unless blk
     sp = _savepoint_name(name)
     quoted = _quote_one(sp)
     _exec_sql("SAVEPOINT " + quoted)
-    released = false
+    _transaction_scope(transaction_mode(), quoted, &blk)
+
+  def _transaction_scope(mode, savepoint, &blk):
+    state = {mode: mode, rollback: false}
+    failed = false
     try:
-      result = blk(self)
-      _exec_sql("RELEASE " + quoted)
-      released = true
-      result
+      @current_transaction.with(state):
+        blk(self)
+    rescue |error|:
+      failed = true
+      raise error
     ensure:
-      if not released:
-        _safe_exec("ROLLBACK TO " + quoted)
-        _safe_exec("RELEASE " + quoted)
+      if failed or state[:rollback]:
+        _rollback_scope(savepoint)
+      else:
+        # Successful scoped break/return is a normal exit. Only an explicit
+        # rollback request or an exception changes the database outcome.
+        try:
+          if savepoint:
+            _exec_sql("RELEASE " + savepoint)
+          else:
+            _exec_sql("COMMIT")
+        rescue |error|:
+          _rollback_scope(savepoint)
+          raise error
+
+  def _rollback_scope(savepoint):
+    if savepoint:
+      _exec_sql("ROLLBACK TO " + savepoint)
+      _exec_sql("RELEASE " + savepoint)
+    else:
+      _exec_sql("ROLLBACK")
 
   def _savepoint_name(name):
     unless name:
@@ -696,12 +755,6 @@ class Database:
     sp = _text_of(name)
     raise ArgumentError("savepoint name must be a safe SQL identifier: " + sp) unless _valid_ident(sp)
     sp
-
-  def _safe_exec(sql):
-    try:
-      _exec_sql(sql)
-    rescue Error |e|:
-      null
 
   # pragmas ---------------------------------------------------------------
   def pragma(name):

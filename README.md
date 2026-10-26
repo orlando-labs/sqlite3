@@ -116,6 +116,13 @@ Core connection layer (`Database`):
   `query_arrays`, `each`, `each_array`, `prepare`
 - `transaction` (deferred/immediate/exclusive, commit-on-return /
   rollback-on-raise), nested `savepoint`s, `begin!` / `commit!` / `rollback!`
+- `rollback` marks the innermost managed transaction/savepoint rollback-only
+  without leaving the block; `rollback_only?` reports that marker. Normal
+  completion, scoped `break` and non-local `return` commit unless marked.
+  `rollback!` remains the immediate SQL operation for manually managed scopes.
+  `Database#transaction_mode` reports the current managed outer mode (or Null).
+  Nested immediate scopes are allowed only under an existing immediate/exclusive
+  reservation; a savepoint cannot upgrade deferred/manual transactions.
 - `pragma` / `pragma!`, `changes` / `total_changes` / `last_insert_rowid`,
   `filename`, `readonly?`, `in_transaction?`, `busy_timeout!`, `interrupt!`,
   `close!` / `destroy!` / `closed?`
@@ -169,10 +176,43 @@ Convenience query layer: `insert`, `insert_or_ignore`, `insert_or_replace`,
 equality/`IN`/`IS NULL` predicate maps, `where` / `where_not`, `group_by`,
 `having`, `order`, `limit` / `offset`, and `returning:`.
 
+External SQL bodies use the common compiler source-format registry:
+
+```sputnik
+@template("./queries/recent.sql.sv")
+def recent_query(cutoff)
+```
+
+Register `.sql.sv` with `module: sqlite3`, `macro: sql` in the project build
+manifest. The file contains SQL text, `#{...}` and `%for`; its parameters/imports
+come from the declaring function/module. Calling `recent_query(cutoff)` returns a
+`SqlFragment`. Rendering uses compiled code in VM and native builds. See the
+[SDK contract](../sputnik-lang/docs/engineering/external-templates-v1.md).
+
 Typed SQL values & sanitization: the exportable `sql"""..."""` string-tag macro
 that turns interpolants into bind parameters, `fragment(text, params)`,
 `ident(name)`, `quote_identifier(name)`, and the `SqlFragment` / `SqlIdent`
 opaque types, accepted in the core methods and convenience slots.
+
+Multiline SQL templates support runtime `%for`; each iteration appends static
+SQL and one `?` / bound parameter per interpolant, preserving traversal order:
+
+```sputnik
+from sqlite3 import sql
+query = sql"""
+  SELECT value FROM items WHERE 0
+  %for value in selected:
+    OR value = #{value}
+  """
+rows = db.query(query)
+```
+
+This builds one `SqlFragment` and executes one query when passed to `db.query`.
+The iterable evaluates once; empty loops add no text or parameters. Separators
+and SQL structure are explicit template text. Values never become SQL syntax,
+and Array interpolation does not implicitly expand a list. `%#` template
+comments and `%%` literal percent lines are supported; other directives are not.
+See [`test/template_loops_selftest.s`](test/template_loops_selftest.s).
 
 Error surface: the full hierarchy from design §12 is registered natively
 (`Sqlite3.Error` … `Sqlite3.ConstraintError`, `BusyError`, `LockedError`,
