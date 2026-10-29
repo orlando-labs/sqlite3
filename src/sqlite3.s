@@ -222,7 +222,7 @@ def open(path as (Str | fs.Path), mode: :create, uri: false, busy_timeout: null,
   conn = Conn(_path_text(path), flags, busy_ms)
   db = Database(conn)
   db._apply_pragmas(pragmas)
-  return db unless blk
+  return db unless &blk
   try:
     blk(db)
   ensure:
@@ -230,7 +230,7 @@ def open(path as (Str | fs.Path), mode: :create, uri: false, busy_timeout: null,
 
 def connect(path as (Str | fs.Path), mode: :create, uri: false, busy_timeout: null, pragmas: {}, &blk):
   db = open(path, mode: mode, uri: uri, busy_timeout: busy_timeout, pragmas: pragmas)
-  return db unless blk
+  return db unless &blk
   try:
     blk(db)
   ensure:
@@ -248,7 +248,7 @@ def memory(name: null, shared: false, busy_timeout: null, pragmas: {}, &blk):
   conn = Conn(path, flags, busy_ms)
   db = Database(conn)
   db._apply_pragmas(pragmas)
-  return db unless blk
+  return db unless &blk
   try:
     blk(db)
   ensure:
@@ -278,7 +278,7 @@ def pool(path as (Str | fs.Path), mode: :create, uri: false, min_size: 0, max_si
   rescue |e|:
     p.close!()
     raise e
-  return p unless blk
+  return p unless &blk
   try:
     blk(p)
   ensure:
@@ -299,7 +299,7 @@ def memory_pool(name: "sputnik_pool", min_size: 1, max_size: 5, checkout_timeout
     max_lifetime: max_lifetime,
     busy_timeout: busy_timeout,
     pragmas: pragmas)
-  return p unless blk
+  return p unless &blk
   try:
     blk(p)
   ensure:
@@ -368,7 +368,7 @@ class Pool:
     _lease_from_result(@core._acquire_wait(timeout_ns))
 
   def checkout(timeout: null, &blk):
-    raise ArgumentError("checkout requires a block; use acquire for a manual lease") unless blk
+    raise ArgumentError("checkout requires a block; use acquire for a manual lease") unless &blk
     if @current_connection.bound?():
       return blk(@current_connection.get())
     lease = acquire(timeout: timeout)
@@ -400,23 +400,23 @@ class Pool:
   def query_arrays(sql, params: null):
     _with_executor_connection() |db|: db.query_arrays(sql, params: params)
   def each(sql, params: null, &blk):
-    raise ArgumentError("each requires a block") unless blk
+    raise ArgumentError("each requires a block") unless &blk
     _with_executor_connection() |db|:
       db.each(sql, params: params) |row|:
         blk(row)
   def each_array(sql, params: null, &blk):
-    raise ArgumentError("each_array requires a block") unless blk
+    raise ArgumentError("each_array requires a block") unless &blk
     _with_executor_connection() |db|:
       db.each_array(sql, params: params) |row|:
         blk(row)
   def prepare(sql, &blk):
-    raise PoolLeaseError("Pool#prepare requires a block so the statement cannot outlive its lease") unless blk
+    raise PoolLeaseError("Pool#prepare requires a block so the statement cannot outlive its lease") unless &blk
     _with_executor_connection() |db|:
       db.prepare(sql) |statement|:
         blk(statement)
 
   def transaction(mode: :deferred, &blk):
-    raise ArgumentError("transaction requires a block") unless blk
+    raise ArgumentError("transaction requires a block") unless &blk
     _with_executor_connection() |db|:
       db.transaction(mode: mode) |tx|:
         @current_connection.with(tx):
@@ -619,7 +619,7 @@ class Database:
   def prepare(sql, &blk):
     handle = @conn._prepare(_prepare_text(sql))
     st = Statement(handle, self)
-    return st unless blk
+    return st unless &blk
     try:
       blk(st)
     ensure:
@@ -662,13 +662,13 @@ class Database:
       statement._query_arrays(parts[1])
 
   def each(sql, params: null, &blk):
-    raise ArgumentError("each requires a block") unless blk
+    raise ArgumentError("each requires a block") unless &blk
     parts = _sql_parts(sql, params)
     _with_statement(:query, parts[0], parts[1]) |statement|:
       statement._each(parts[1], &blk)
 
   def each_array(sql, params: null, &blk):
-    raise ArgumentError("each_array requires a block") unless blk
+    raise ArgumentError("each_array requires a block") unless &blk
     parts = _sql_parts(sql, params)
     _with_statement(:query, parts[0], parts[1]) |statement|:
       statement._each_array(parts[1], &blk)
@@ -700,7 +700,7 @@ class Database:
     @current_transaction.get()[:mode]
 
   def transaction(mode: :deferred, &blk):
-    raise ArgumentError("transaction requires a block") unless blk
+    raise ArgumentError("transaction requires a block") unless &blk
     if @conn._in_transaction?:
       # A savepoint cannot upgrade a deferred/manual transaction to a writer.
       # Reusing an already acquired writer reservation is safe.
@@ -711,7 +711,7 @@ class Database:
     _transaction_scope(mode, null, &blk)
 
   def savepoint(name: null, &blk):
-    raise ArgumentError("savepoint requires a block") unless blk
+    raise ArgumentError("savepoint requires a block") unless &blk
     sp = _savepoint_name(name)
     quoted = _quote_one(sp)
     _exec_sql("SAVEPOINT " + quoted)
@@ -968,7 +968,7 @@ class Statement:
     {columns: cols, rows: rows}
 
   def each(params: null, &blk):
-    raise ArgumentError("each requires a block") unless blk
+    raise ArgumentError("each requires a block") unless &blk
     @db._instrument_query(:query, sql, params):
       _each(params, &blk)
 
@@ -983,7 +983,7 @@ class Statement:
     count
 
   def each_array(params: null, &blk):
-    raise ArgumentError("each_array requires a block") unless blk
+    raise ArgumentError("each_array requires a block") unless &blk
     @db._instrument_query(:query, sql, params):
       _each_array(params, &blk)
 
