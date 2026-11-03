@@ -1,28 +1,36 @@
-schema: sputnik.build.v1
-name: sqlite3
-root: sqlite3
-
+requires:
+  sputnik: ">=1.0.0 <2.0.0"
+schema: "sputnik.build.v1"
+name: "sqlite3"
+version: "0.1.0"
+source_root: "src"
 profiles:
-  required: [core.v1, ffi.v1, macro.v1]
+  required:
+    - "core.v1"
+    - "ffi.v1"
+    - "macro.v1"
   optional: []
   forbidden: []
-
-modules:
-  - name: sqlite3
-    path: src/sqlite3.s
-
+files:
+  - "src/sqlite3.s"
+  - "native/sqlite3_ext.c"
+  - "native/sqlite3.c"
+  - "native/sqlite3.h"
+  - "README.md"
+  - "LICENSE"
 native_extensions:
-  - name: sqlite3
-    language: c
-    sources:
-      - native/sqlite3_ext.c
-      - native/sqlite3.c
-    headers:
-      - native/sqlite3.h
-    defines:
-      - SQLITE_THREADSAFE=1
-      - SQLITE_ENABLE_COLUMN_METADATA=1
-      - SQLITE_ENABLE_FTS5=1
-      - SQLITE_ENABLE_JSON1=1
-      - SQLITE_DQS=0
-      - SQLITE_OMIT_LOAD_EXTENSION=1
+  -
+      name: "sqlite3"
+      language: "c"
+      sources:
+        - "native/sqlite3_ext.c"
+        - "native/sqlite3.c"
+      headers:
+        - "native/sqlite3.h"
+      defines:
+        - "SQLITE_THREADSAFE=1"
+        - "SQLITE_ENABLE_COLUMN_METADATA=1"
+        - "SQLITE_ENABLE_FTS5=1"
+        - "SQLITE_ENABLE_JSON1=1"
+        - "SQLITE_DQS=0"
+        - "SQLITE_OMIT_LOAD_EXTENSION=1"

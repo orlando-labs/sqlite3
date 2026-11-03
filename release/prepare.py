@@ -36,22 +36,40 @@ def rewrite(text):
     return text
 
 def manifest(data):
-    lines = ['schema = "sputnik.package-manifest.v1"']
-    def table(name, obj, repeated=False):
-        lines.append('\n' + ('[[' if repeated else '[') + name + (']]' if repeated else ']'))
-        for k,v in obj.items():
-            if isinstance(v,dict): continue
-            if isinstance(v,list) and v and isinstance(v[0],dict): continue
-            lines.append(Q(k) + ' = ' + Q(v))
-        for k,v in obj.items():
-            if isinstance(v,dict): table(name+'.'+k,v)
-            elif isinstance(v,list) and v and isinstance(v[0],dict):
-                for item in v: table(name+'.'+k,item,True)
-    for name,obj in data.items():
-        if isinstance(obj,list):
-            for item in obj: table(name,item,True)
-        else: table(name,obj)
-    return '\n'.join(lines)+'\n'
+    package = data['package']
+    result = dict(schema='sputnik.build.v1', **package, source_root='src', requires=data.get('requires', {'sputnik': '>=1.0.0 <2.0.0'}))
+    result.pop('root', None)
+    files = list(data.get('files', {}).get('include', []))
+    names = {}
+    for module in data.get('modules', []):
+        path = module.get('source', module.get('bytecode', module.get('path')))
+        files.append(path)
+        inferred = path.removeprefix('src/').rsplit('.', 1)[0].replace('/', '.')
+        if inferred != module['name']: names[path] = module['name']
+    native = data.get('native', [])
+    for extension in native:
+        files.extend(extension.get('sources', [])); files.extend(extension.get('headers', []))
+        if extension.get('library'): files.append(extension['library'])
+        files.extend(library['path'] for library in extension.get('libraries', []))
+    for provider in data.get('native_providers', []):
+        files.extend(provider.get('files', []))
+        files.extend(library['path'] for library in provider.get('libraries', []))
+    expanded = []
+    for file in files:
+        path = stage / file
+        if path.is_dir(): expanded.extend(p.relative_to(stage).as_posix() for p in sorted(path.rglob('*')) if p.is_file())
+        else: expanded.append(file)
+    result['files'] = list(dict.fromkeys(expanded))
+    if names: result['module_names'] = names
+    if native:
+        result['native_extensions'] = native
+        result['profiles'] = dict(required=['core.v1', 'ffi.v1'])
+    for key in ['artifact', 'target', 'dependencies', 'capabilities', 'native_requirements', 'native_providers']:
+        if key in data: result[key] = data[key]
+    if 'artifact' in result and 'build-dependencies' in result['artifact']:
+        result['artifact']['build_dependencies'] = result['artifact'].pop('build-dependencies')
+    # YAML flow values use the JSON subset and need no third-party serializer.
+    return ''.join(key + ': ' + Q(value) + '\n' for key, value in result.items())
 
 def run(cmd,log):
     print('+', ' '.join(map(str,cmd)),flush=True)
@@ -68,12 +86,16 @@ p.add_argument('--platform',choices=['macos-aarch64','linux-x86_64-gnu'],default
 p.add_argument('--native',choices=['source','prebuilt'],default='source')
 p.add_argument('--modules',choices=['source','bytecode','mixed'],default='source')
 a=p.parse_args(); config=a.config.resolve(); cfg=json.loads(config.read_text()); repo=config.parent.parent
+sputnik_version=subprocess.check_output([str(a.sputnik), '--version'], text=True).strip().removeprefix('sputnik ')
+version_header=(SDK_ROOT/'runtime/version.h').read_text()
+header_version='.'.join(re.search(r'^#define SPUTNIK_VERSION_'+part+r' ([0-9]+)$', version_header, re.M).group(1) for part in ['MAJOR','MINOR','PATCH'])
+if sputnik_version != header_version: raise SystemExit('Sputnik compiler and SDK headers differ; rebuild the compiler before preparing a release')
 native=cfg.get('native',[])
 bundle=cfg.get('bundle','none')
 if a.native=='prebuilt' and bundle=='sdk':bundle='runtime'
 variant=(a.platform+'-'+a.native+'-' if native else '')+a.modules+('-'+bundle if bundle!='none' else '')
 work=a.out.resolve()/cfg['name']/variant; stage=work/'stage'; stage.mkdir(parents=True,exist_ok=True)
-data={'package':{'name':'slowpilot/'+cfg['name'],'version':cfg['version'],'root':scoped(cfg['root'])},'artifact':{'variant':variant},'target':{'os':'any','arch':'any'},'modules':[]}
+data={'requires':cfg.get('requires', {'sputnik': '>=1.0.0 <2.0.0'}),'package':{'name':'slowpilot/'+cfg['name'],'version':cfg['version'],'root':scoped(cfg['root'])},'artifact':{'variant':variant},'target':{'os':'any','arch':'any'},'modules':[]}
 seen=set()
 for src in cfg['sources']:
     for file in sorted(repo.glob(src)):
@@ -81,8 +103,10 @@ for src in cfg['sources']:
         seen.add(file)
         if not file.is_file(): continue
         text=file.read_text(); name=re.search(r'^package ([\w.]+)',text,re.M).group(1)
-        dest=stage/file.relative_to(repo); dest.parent.mkdir(parents=True,exist_ok=True);dest.write_text(rewrite(text))
-        data['modules'].append({'name':scoped(name),'source':file.relative_to(repo).as_posix()})
+        module=scoped(name)
+        relative=Path('src').joinpath(*module.split('.')).with_suffix('.s')
+        dest=stage/relative; dest.parent.mkdir(parents=True,exist_ok=True);dest.write_text(rewrite(text))
+        data['modules'].append({'name':module,'source':relative.as_posix()})
 if cfg.get('dependencies'):data['dependencies']={'slowpilot/'+k:v for k,v in cfg['dependencies'].items()}
 if cfg.get('capabilities'):data['capabilities']=cfg['capabilities']
 files=[]
@@ -105,7 +129,7 @@ if native:
             dest=stage/pattern;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(repo/pattern,dest)
     if a.native=='prebuilt':
         lib=stage/'lib'/('lib'+cfg['name']+('.dylib' if a.platform.startswith('macos') else '.so'));lib.parent.mkdir(exist_ok=True)
-        shim=work/'abi.c';shim.write_text('#include "runtime/sputnik_ext.h"\n#if defined(__GNUC__)\n__attribute__((weak))\n#endif\nuint32_t sputnik_ext_abi_version(void) { return SPUTNIK_EXT_ABI_VERSION; }\n')
+        shim=work/'abi.c';shim.write_text('#include "runtime/sputnik_ext.h"\n#if defined(__GNUC__)\n__attribute__((weak))\n#endif\nconst char *sputnik_language_version(void) { return SPUTNIK_VERSION; }\n')
         objects=[]; compiler=os.environ.get('CXX','clang++' if a.platform.startswith('macos') else 'g++')
         for i,ext in enumerate(native):
             for j,src in enumerate(ext['sources']):
@@ -126,12 +150,12 @@ if native:
             run(['install_name_tool','-id','@rpath/'+lib.name,lib],work/'install-name.log')
             run(['codesign','--force','--sign','-',lib],work/'codesign.log')
         ext=copy.deepcopy(native[0]);ext={k:v for k,v in ext.items() if k in ['name','symbols','types','errors','blocking_symbols','required_runtime_features']}
-        ext.update(kind='prebuilt',library=lib.relative_to(stage).as_posix(),sputnik_ext_abi=1)
+        ext.update(kind='prebuilt',library=lib.relative_to(stage).as_posix(),sputnik_version=sputnik_version)
         if data.get('native_providers'):data['native_providers']=[p for p in data['native_providers'] if p['kind']=='runtime']
         if cfg.get('native_requirements'):
             data['native_requirements']=[r for r in data['native_requirements'] if r['kind']=='runtime'];ext['requirements']=[r['id'] for r in data['native_requirements']]
         data['native']=[ext]
-(stage/'sputnik.toml').write_text(manifest(data))
+(stage/'sputnik.build.yaml').write_text(manifest(data))
 archive=work/(cfg['name']+'-'+variant+'.sputnikpkg')
 run([a.sputnik.resolve(),'pkg','build',stage,'--modules',a.modules,'--out',archive],work/'build.log')
 run([a.sputnik.resolve(),'pkg','inspect',archive],work/'inspect.json')

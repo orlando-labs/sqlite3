@@ -179,7 +179,7 @@ equality/`IN`/`IS NULL` predicate maps, `where` / `where_not`, `group_by`,
 External SQL bodies use the common compiler source-format registry:
 
 ```sputnik
-@template("./queries/recent.sql.sv")
+template("./queries/recent.sql.sv")
 def recent_query(cutoff)
 ```
 

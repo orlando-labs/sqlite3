@@ -1,6 +1,6 @@
 {
   "name": "sqlite3",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "root": "sqlite3",
   "sources": [
     "src/*.s"
@@ -26,5 +26,8 @@
         "SPUTNIK_SQLITE3_ERROR_NAMESPACE=\"Slowpilot.Sqlite3\""
       ]
     }
-  ]
+  ],
+  "requires": {
+    "sputnik": ">=1.0.0 <2.0.0"
+  }
 }

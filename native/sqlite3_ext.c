@@ -1856,7 +1856,7 @@ SputnikStatus amsq_stmt_step(SputnikCtx *cx, SputnikValue self, const SputnikVal
   return fault_for_rc(cx, sqlite3_db_handle(stmt), rc, SPUTNIK_SQLITE3_ERROR_NAMESPACE ".StepError");
 }
 
-/* Note: sputnik_ext_abi_version() is intentionally NOT defined here. When this
+/* Note: sputnik_language_version() is intentionally NOT defined here. When this
  * package is built in-tree, the Sputnik runtime archive already provides that
  * symbol; defining it again is a duplicate-symbol link error. A standalone
  * (out-of-tree) build against a prebuilt libsputnik would add it in its own
